@@ -32,3 +32,8 @@ docs/macos/reports/*.png
 # macOS port (T0.1): local tooling artifacts, not project source
 .DS_Store
 .omc/
+
+# macOS port (T0.3): downloaded release builds used for local spikes/testing
+# (e.g. CrossOver), not project source. Safe to delete anytime.
+/yfm-redecomp-*/
+/yfm-redecomp-*.zip
