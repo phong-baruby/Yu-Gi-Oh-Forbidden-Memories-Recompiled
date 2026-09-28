@@ -2,14 +2,14 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T0.1
-**Upstream base:** `<commit sha của upstream/master lúc rebase gần nhất>`
+**Task hiện tại:** T0.2
+**Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
 Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị chặn · `[-]` bỏ qua (ghi lý do)
 
 ### M0 — Nền móng
-- [ ] T0.1 Fork, remote, branch, guard dữ liệu, diff_budget
+- [x] T0.1 Fork, remote, branch, guard dữ liệu, diff_budget
 - [ ] T0.2 Toolchain và doctor
 - [ ] T0.3 Spike CrossOver (checklist + fen chạy thử)
 - [ ] T0.4 CMake portable trên arm64
@@ -49,6 +49,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ## Số liệu theo dõi
 | Ngày | Census LP64 (pass/tổng) | Script golden pass | Override entries | Diff budget (dòng, file dùng chung) |
 |---|---|---|---|---|
+| 2026-09-28 | — | — | — | 8 (.gitignore) |
 
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
@@ -64,3 +65,4 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - Hướng xử lý global (ADR-03) — chốt ở T0.6.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-09-28 — T0.1 xong. Clone fork `phong-baruby/Yu-Gi-Oh-Forbidden-Memories-Recompiled` (không dùng `gh`, không có credentials push nên chưa đẩy `macos/main` lên origin — cần fen thiết lập xác thực GitHub). Thêm remote `upstream`, tạo `macos/main` từ `upstream/master` (818a0d4). `.gitignore` chỉ append (không sửa dòng cũ; `*.bin`/`*.cue`/`*.BIN`/`game/`/`tmp/` đã có sẵn dạng case-insensitive nên không lặp lại, chỉ thêm `*.state`, `docs/macos/reports/*.png`, và thêm `.DS_Store`/`.omc/` cho gọn máy dev). Cài kit vào `docs/macos/` + `.claude/commands/`. Viết `tools/pc/macos/diff_budget.py`, chạy pass: nhóm (a)=8 dòng (`.gitignore`), nhóm (b)=0. Việc còn dở: push `macos/main` lên origin.
