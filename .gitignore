@@ -24,3 +24,11 @@
 # Tool-generated language caches
 **/__pycache__/
 *.py[cod]
+
+# macOS port (T0.1): save states and generated report screenshots
+*.state
+docs/macos/reports/*.png
+
+# macOS port (T0.1): local tooling artifacts, not project source
+.DS_Store
+.omc/
