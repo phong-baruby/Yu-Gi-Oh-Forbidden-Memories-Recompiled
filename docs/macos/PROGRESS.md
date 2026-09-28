@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T0.3
+**Task hiện tại:** T0.4
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -11,7 +11,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ### M0 — Nền móng
 - [x] T0.1 Fork, remote, branch, guard dữ liệu, diff_budget
 - [x] T0.2 Toolchain và doctor
-- [~] T0.3 Spike CrossOver (checklist + fen chạy thử)
+- [x] T0.3 Spike CrossOver (checklist + fen chạy thử)
 - [ ] T0.4 CMake portable trên arm64
 - [ ] T0.5 Census LP64
 - [ ] T0.6 Giải phẫu build upstream (chốt ADR-03)
@@ -65,6 +65,7 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - Hướng xử lý global (ADR-03) — chốt ở T0.6.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-09-28 — T0.3 xong. Fen chạy CrossOver 26.3 (Apple Silicon), bottle Windows 10 64-bit tạo qua flow "Install an unlisted application", ROM test là bản mod `YGOFM Mod 2023 15x.bin` (chưa có dump đĩa gốc hợp lệ — 2 bản `.bin` khác kiểm tra hash không khớp retail SLUS-01411, xem chi tiết trong checklist). Kết quả: lên được tới màn build deck (data bài render đúng), nhưng giật lag, âm thanh rè liên tục, và **đơ cứng tái hiện 3/3 lần** khi vào menu Game > Controller (kể cả không đổi gì). Chưa kịp bắt log "taken by Windows" vì bị đơ trước. Kết luận: CrossOver dùng tạm được nhưng không đủ ổn định làm bản chơi chính; không chặn lộ trình port native. Full chi tiết: `docs/macos/reports/m0-crossover-checklist.md`.
 - 2026-09-28 — T0.3 đang làm. Claude soạn `docs/macos/reports/m0-crossover-checklist.md`. Trong lúc bàn công cụ: phát hiện Whisky (gợi ý ban đầu) có hàng loạt fork GitHub đáng ngờ (mô tả giống hệt nhau, username lạ) — nghi spam/malware, khuyến nghị không cài; `wine-stable` Homebrew phổ thông không chạy được 32-bit trên Apple Silicon (memories-pc.exe là build 32-bit) — cần `gcenx/wine-crossover` (tap uy tín, wine32on64) hoặc CrossOver. Fen chọn CrossOver trả phí (dùng thử 14 ngày, ~$40–64 nếu mua) để chắc ăn nhất. Việc còn dở: fen tự chạy theo checklist, ghi kết quả vào bảng tổng kết trong file checklist rồi báo Claude để chốt T0.3 (`[x]`) và commit.
 - 2026-09-28 — T0.2 xong. Viết `tools/pc/macos/doctor.py` (check Xcode CLT/clang arm64, brew llvm + `aarch64-none-elf` + libclang, cmake/ninja, python3 ≥3.11, binding `clang` python, warn MEMORIES_DISC). Lần chạy đầu phát hiện `python3` mặc định trỏ Python.framework 3.8 (x86_64, không load được libclang arm64) do 3 khối PATH-prepend trong `~/.zprofile` (3.12/3.10/3.8, khối 3.8 thêm sau cùng nên thắng — mà bản 3.12 thực ra đã bị gỡ khỏi máy). Đã comment 2 khối 3.10/3.8 trong `~/.zprofile` → `python3` rơi xuống Homebrew 3.14.6 (arm64, ≥3.11). Cài `clang==17.0.6` cho Homebrew python3 (`pip install --user --break-system-packages`, Homebrew Python là externally-managed). Thêm `export LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib/libclang.dylib` vào `~/.zprofile` để `clang.cindex` load được libclang của brew llvm. Doctor chạy xanh (5 🟢, 1 🟡 MEMORIES_DISC) trong shell login mới; `diff_budget.py` vẫn pass. Lưu ý: các thay đổi PATH/pip chỉ áp dụng cho shell login mới, không áp dụng ngược cho các shell/tool đã mở từ trước.
 - 2026-09-28 — T0.1 xong. Clone fork `phong-baruby/Yu-Gi-Oh-Forbidden-Memories-Recompiled`, thêm remote `upstream`, tạo `macos/main` từ `upstream/master` (818a0d4). `.gitignore` chỉ append (không sửa dòng cũ; `*.bin`/`*.cue`/`*.BIN`/`game/`/`tmp/` đã có sẵn dạng case-insensitive nên không lặp lại, chỉ thêm `*.state`, `docs/macos/reports/*.png`, và thêm `.DS_Store`/`.omc/` cho gọn máy dev). Cài kit vào `docs/macos/` + `.claude/commands/`. Viết `tools/pc/macos/diff_budget.py`, chạy pass: nhóm (a)=8 dòng (`.gitignore`), nhóm (b)=0. Push `macos/main` lên `origin` qua SSH (đổi origin từ HTTPS sang `git@github.com:...` vì không có `gh`/credential HTTPS). Việc còn dở: không có.

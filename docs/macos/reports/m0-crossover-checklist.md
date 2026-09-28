@@ -45,58 +45,53 @@ trường `MEMORIES_DISC` trong bottle (đó là cơ chế riêng của macOS/Li
 
 ### 4.1 Lên title screen chưa?
 
-- [ ] Có / Không
-- Ghi chú (đứng ở dialog chọn ROM, crash ngay, màn hình đen, v.v.): ___
-- Chụp ảnh màn hình nếu tiện, lưu vào `docs/macos/reports/` (đã có trong
-  `.gitignore`: `docs/macos/reports/*.png`, nên không sợ commit nhầm ảnh chứa
-  nội dung game).
+- [x] Có — vượt xa hơn dự kiến: qua title screen, nhập tên, tới tận màn
+  **build deck** (danh sách bài render đúng, đọc được rõ ràng).
+- Ghi chú: dùng bottle "Windows 10 64 Bit" tạo qua flow **Install an unlisted
+  application** (không qua flow "New Bottle" thủ công như hướng dẫn gốc ở
+  Bước 2 — CrossOver bản 26.3 gộp 2 bước làm một, tự nhận diện file `.exe` và
+  tự tạo bottle 64-bit phù hợp).
+- ROM dùng để test: **không phải đĩa gốc** — dùng tạm bản mod
+  `YGOFM Mod 2023 15x.bin` (drop rate x15) vì chưa có dump đĩa gốc USA hợp lệ
+  (2 bản `.bin` khác kiểm tra hash không khớp bản retail SLUS-01411).
 
 ### 4.2 Log "physical RAM mirror ... taken by Windows"
 
-Vì `memories-pc.exe` là GUI app không có console, log này (in ra `stderr` ở
-`src/pc/guest/image.c:281`) sẽ không tự hiện ra. Hai cách bắt:
-
-**Cách 1 — chạy qua Terminal (đáng tin cậy nhất):**
-```sh
-export WINEPREFIX="$HOME/Library/Application Support/CrossOver/Bottles/yfm"
-"/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine" \
-  "C:\\Games\\yfm\\memories-pc.exe"
-```
-(Đổi `yfm` nếu đặt tên bottle khác. Nếu đường dẫn `WINEPREFIX` không đúng, mở
-CrossOver > bottle > **Configure** để xem đường dẫn thật của bottle.) Log lỗi
-sẽ in thẳng ra Terminal.
-
-**Cách 2 — xem log qua CrossOver:** bottle `yfm` > **Configure** > tab
-**Diagnostics** (tên tab có thể khác theo phiên bản CrossOver) thường có nút
-xem/mở log gần nhất. Nếu không thấy, thử **View in Finder** trên bottle rồi
-tìm file log trong đó.
-
-- [ ] Log "taken by Windows" có xuất hiện không? Có / Không
-- Nếu có, ghi lại số KiB: ___
+- [ ] **Chưa kiểm tra được.** Game bị đơ (xem mục 4.5) trước khi kịp thực hiện
+  bước chạy qua Terminal để bắt `stderr`. Không phải ưu tiên để thử lại lần
+  4 — không ảnh hưởng tới quyết định go/no-go của T0.3.
 
 ### 4.3 FPS
 
-- [ ] Cảm nhận: mượt (khớp 60 FPS gốc PS1) / giật / không chơi được
-- Có hiện tượng xé hình (tearing) không: ___
-- (Không cần đo số chính xác, chỉ ghi cảm nhận chủ quan.)
+- [x] **Giật/lag** — không mượt. (Lần thử đầu bị nhiễu bởi một tiến trình cài
+  đặt "Unlisted application" chạy song song trong CrossOver chưa xong; lần
+  thử lại sau khi cài xong vẫn giật, nên không chỉ do install chạy nền.)
 
 ### 4.4 Âm thanh
 
-- [ ] Nhạc nền có phát không: ___
-- [ ] Hiệu ứng âm thanh (SFX) có phát không: ___
-- Có rè, lệch tiếng, hay bị cắt quãng không: ___
+- [x] Nhạc nền + SFX **có phát**, nhưng **rè liên tục** trong suốt quá trình
+  chơi, không phải hiện tượng thoáng qua.
 
-### 4.5 Input (tham khảo, không bắt buộc)
+### 4.5 Input
 
-- [ ] Bàn phím có nhận không: ___
-- [ ] Gamepad (nếu có) có nhận không: ___
+- [x] Bàn phím **có nhận lúc đầu** (chọn menu, build deck bình thường).
+- [x] **Đơ hoàn toàn** (không bấm được gì nữa, kể cả sau khi vào menu
+  **Game > Controller** rồi thoát ra mà **chưa đổi gì**) — tái hiện **3 lần
+  liên tiếp** (thử lại từ đầu 3 lần, kể cả sau khi force-quit qua Activity
+  Monitor và mở lại), nên là lỗi thật của tổ hợp CrossOver/Wine + màn hình
+  Controller config, không phải ngẫu nhiên.
+- Gamepad: chưa thử (dừng lại sau khi bàn phím đã đơ).
 
-## Bảng tổng kết (điền vào đây rồi copy dòng tương ứng sang `PROGRESS.md`)
+## Bảng tổng kết
 
 | Ngày thử | Lên title screen | Log "taken by Windows" | FPS | Âm thanh | Kết luận nhanh |
 |---|---|---|---|---|---|
-| | | | | | |
+| 2026-09-28 | Có, tới tận build deck | Chưa kiểm tra được (đơ trước khi kịp bắt log) | Giật/lag | Có phát, rè liên tục | Chạy được ở mức cơ bản nhưng **không ổn định**: đơ hẳn khi vào Game > Controller (tái hiện 3/3 lần), không đủ tin cậy làm bản chơi tạm. Không chặn lộ trình port native. |
 
-Sau khi điền xong, cập nhật `docs/macos/PROGRESS.md`: đổi T0.3 thành `[x]`
-(hoặc `[!]`/`[-]` kèm lý do nếu không chạy được), copy dòng tổng kết vào mục
-Nhật ký session, rồi báo Claude để commit.
+**Kết luận T0.3:** CrossOver có thể load và chạy sâu được bản Windows hiện tại
+trên Apple Silicon (kể cả build deck với dữ liệu bài đầy đủ), nhưng gặp treo
+cứng có thể tái hiện khi vào màn hình cấu hình Controller, cộng thêm giật lag
+và rè âm thanh liên tục. Không đủ ổn định để dùng làm bản chơi tạm đáng tin
+cậy trong lúc port macOS native — nhưng đúng như milestone đã ghi, **điều này
+không chặn lộ trình port**, chỉ là T0.3 không mang lại một "bản chơi tạm" hữu
+dụng như kỳ vọng ban đầu.
