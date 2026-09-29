@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T1.2
+**Task hiện tại:** T1.3
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -20,7 +20,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 
 ### M1 — Title screen
 - [x] T1.1 gptr.h và test
-- [ ] T1.2 Image guest trên macOS
+- [x] T1.2 Image guest trên macOS
 - [ ] T1.3 Codemod struct và kiểm tra layout
 - [ ] T1.4a SDK · [ ] T1.4b ai_* · [ ] T1.4c func_800[0-3] · [ ] T1.4d phần còn lại của src/game · [ ] T1.4e pc/overrides, compat, packets
 - [ ] T1.5 Globals
@@ -70,6 +70,7 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - `objcopy --weaken-symbol` (native override thắng game code) không hỗ trợ Mach-O (`llvm-objcopy` báo lỗi thẳng) — cần cơ chế khác (`__attribute__((weak))` lúc compile) ở M1.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-09-29 — T1.2 xong. `src/pc/guest/image_lp64.c`: `Memories_GuestMap` dùng `malloc` thường cho `g_ram`/`g_scratch` (không cần trap/mirror, khác ILP32); `Memories_GuestLoadExeData` giữ y hệt logic đọc header PS-X EXE của `image.c`, chỉ đổi `memcpy((void*)address,...)` → `memcpy(G2H(address),...)`. Test `tests/pc/image_test.c` đọc **disc thật** qua `MEMORIES_DISC` (dùng `GameFiles_Disc`/`GameFiles_ReadExecutable` có sẵn, không mock) — skip (77) nếu thiếu/không hợp lệ, đúng pattern `SKIP_RETURN_CODE` đã có trong repo. Tự verify pass thật với file mod `Drop 15 Card 722 Full.bin` (file mod kia `YGOFM Mod 2023 15x.bin` bị `GameFiles_Disc` từ chối, không rõ lý do, không điều tra thêm vì ngoài scope): so 16 byte tại entry point giữa file và `G2H(entry)` khớp 100%. Không hồi quy: 30/61 fail (61 = 60 + `pc_image` mới), vẫn đúng 30 như T1.1. Chi tiết: `docs/macos/reports/m1-image.md`.
 - 2026-09-29 — T1.1 xong. Hoàn thiện `src/pc/guest/gptr.h` + `src/pc/guest/gptr_lp64.c` (H2G, `g_ram`/`g_scratch` storage). **Bug tìm thấy:** `G2H(0)` bản T0.7 không trả về NULL (underflow unsigned che mất case này) — đã sửa. **Xác minh scratchpad:** `image.c` map 4KB (`0x1000`) trên cả Windows/POSIX nhưng scratchpad thật PS1 chỉ 1KB — giữ nguyên biên `0x400` trong `G2H`, không cần sửa gì. `tests/pc/gptr_test.c` pass cả 4 tiêu chí (G2H(0)==NULL, 3 mirror KSEG0/1/KUSEG cùng 1 byte, H2G chuẩn hoá KSEG0, con trỏ ngoài vùng abort — test bằng fork+exec). CMake: option `MEMORIES_LP64` mới (mặc định OFF), test `pc_gptr` chỉ đăng ký khi bật (đã xác minh build mặc định không có target này). Không hồi quy: 30/60 test fail với `-DMEMORIES_LP64=ON -k 0`, khớp đúng con số T0.4 (chỉ thêm 1 test mới pass). Chi tiết: `docs/macos/reports/m1-gptr.md`.
 - 2026-09-29 — **Gate G0: GO.** Fen chốt tiếp tục M1 dựa trên số liệu T0.5/T0.7. Task hiện tại → T1.1.
 - 2026-09-29 — T0.7 xong, M0 hoàn thành phần của Claude (còn Gate G0 chờ fen). Chọn 5 struct trong `ygo_types.h` theo tần suất dùng thật (dò bằng libclang, không phải regex tay — regex ban đầu sai vì struct lồng nhau): `DuelEffectChannel` (285 lần dùng, 6 field con trỏ), `FileTransferDescriptor` (100 lần, 3 field), `TextStreamOwner` (25 lần, 1 field mảng 22 con trỏ), `DisplayObjectStreamState` (22 lần, 3 field), `LibraryMotionState` (16 lần, 2 field) — tổng 15 field. Viết `src/pc/guest/gptr.h` (bản macro-only đúng ADR-02, cộng `GPTR_FN` mới phát hiện) và `tools/pc/lp64/codemod.py` (libclang, đọc `src/`, ghi `tmp/lp64/src/`). Kết quả: **cả 2 tiêu chí acceptance đạt** — layout 5 struct khớp tuyệt đối giữa i386 gốc và arm64+`MEMORIES_LP64` trên output codemod (dump bằng `-fdump-record-layouts-*`, cách làm theo `check_layouts.py`); codemod idempotent (chạy 2 lần byte-identical). Phát hiện cần macro `GPTR_FN(T)` cho field khai báo qua typedef con trỏ sẵn có (`FileTransferDescriptor.phase_callback`) — 1/15 field (6.7%), dưới xa ngưỡng 30% milestone đặt ra. Đã cập nhật ADR-02/05. Chi tiết đầy đủ, kể cả 3 lỗi tự vấp phải và cách sửa: `docs/macos/reports/m0-codemod-prototype.md`.
