@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T0.5
+**Task hiện tại:** T0.6
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -13,7 +13,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 - [x] T0.2 Toolchain và doctor
 - [x] T0.3 Spike CrossOver (checklist + fen chạy thử)
 - [x] T0.4 CMake portable trên arm64
-- [ ] T0.5 Census LP64
+- [x] T0.5 Census LP64
 - [ ] T0.6 Giải phẫu build upstream (chốt ADR-03)
 - [ ] T0.7 Prototype codemod 5 struct
 - [ ] **Gate G0** — go/no-go
@@ -50,6 +50,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 | Ngày | Census LP64 (pass/tổng) | Script golden pass | Override entries | Diff budget (dòng, file dùng chung) |
 |---|---|---|---|---|
 | 2026-09-28 | — | — | — | 8 (.gitignore) |
+| 2026-09-29 | 64/546 (11.7%) | — | — | 8 (.gitignore) |
 
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
@@ -65,6 +66,7 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - Hướng xử lý global (ADR-03) — chốt ở T0.6.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-09-29 — T0.5 xong. Viết `tools/pc/lp64/census.py` (theo mẫu `host_census.py`, dùng đúng define `MEMORIES_PC/_LANGUAGE_C/LANGUAGE_C` mà `build_game32.py` dùng cho unit game/overlay thật). Syntax-check `clang --target=arm64-apple-macos -fsyntax-only -ferror-limit=0` (bỏ trần lỗi mặc định sau khi thấy 425/546 file chạm trần ở lần chạy đầu). Kết quả: **64/546 unit pass (11.7%)** — 60/514 `src/game`, 4/32 `src/overlays`. Chỉ đúng 2 loại lỗi tồn tại: struct-offset LP64 assert (27,811 lần — 94.5%, đúng vấn đề ADR-05/T0.7) và section attribute ELF-only (1,623 lần, độc lập LP64). Baseline này dùng để đối chiếu kết quả codemod ở T0.7. Chi tiết: `docs/macos/reports/m0-census.md`.
 - 2026-09-28 — T0.4 xong. Configure sạch (không nhánh macOS riêng trong CMakeLists.txt, rơi vào nhánh generic). Build (`-k 0`): 195 bước, 26 compile unit fail, phần còn lại sạch. ctest: 59 test, 27 pass, 2 skip chủ động (SKIP_RETURN_CODE 77, không liên quan macOS), 30 fail — tất cả do build fail, không phải logic sai. 4 nhóm nguyên nhân: (1) LP64 struct-offset assert trong `ygo_types.h`+vệ tinh — 4 test, đúng vấn đề ADR-05/T0.7 sẽ giải; (2) section attribute kiểu ELF trong 2 header `src/game/` (mach-o cần `SEGMENT,section`) — đi kèm nhóm 1; (3) `MAP_FIXED_NOREPLACE`/`MAP_ANONYMOUS` (Linux-only) trong `src/pc/mods/{mods,object_loader}.c` — 6 test; (4) `mkdtemp` bị Darwin libc ẩn khi có `_POSIX_C_SOURCE` tường minh (khác glibc) — 20+4 test. Chi tiết đầy đủ: `docs/macos/reports/m0-cmake.md`. Không sửa code, không đụng file cấm.
 - 2026-09-28 — T0.3 xong. Fen chạy CrossOver 26.3 (Apple Silicon), bottle Windows 10 64-bit tạo qua flow "Install an unlisted application", ROM test là bản mod `YGOFM Mod 2023 15x.bin` (chưa có dump đĩa gốc hợp lệ — 2 bản `.bin` khác kiểm tra hash không khớp retail SLUS-01411, xem chi tiết trong checklist). Kết quả: lên được tới màn build deck (data bài render đúng), nhưng giật lag, âm thanh rè liên tục, và **đơ cứng tái hiện 3/3 lần** khi vào menu Game > Controller (kể cả không đổi gì). Chưa kịp bắt log "taken by Windows" vì bị đơ trước. Kết luận: CrossOver dùng tạm được nhưng không đủ ổn định làm bản chơi chính; không chặn lộ trình port native. Full chi tiết: `docs/macos/reports/m0-crossover-checklist.md`.
 - 2026-09-28 — T0.3 đang làm. Claude soạn `docs/macos/reports/m0-crossover-checklist.md`. Trong lúc bàn công cụ: phát hiện Whisky (gợi ý ban đầu) có hàng loạt fork GitHub đáng ngờ (mô tả giống hệt nhau, username lạ) — nghi spam/malware, khuyến nghị không cài; `wine-stable` Homebrew phổ thông không chạy được 32-bit trên Apple Silicon (memories-pc.exe là build 32-bit) — cần `gcenx/wine-crossover` (tap uy tín, wine32on64) hoặc CrossOver. Fen chọn CrossOver trả phí (dùng thử 14 ngày, ~$40–64 nếu mua) để chắc ăn nhất. Việc còn dở: fen tự chạy theo checklist, ghi kết quả vào bảng tổng kết trong file checklist rồi báo Claude để chốt T0.3 (`[x]`) và commit.
