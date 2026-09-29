@@ -15,6 +15,7 @@ Mỗi ADR có trạng thái **Accepted** (đã chốt), **Proposed** (cần xác
 #ifdef MEMORIES_LP64
 typedef uint32_t gaddr;
 #define GPTR(T) gaddr
+#define GPTR_FN(T) gaddr     /* field khai báo qua typedef con trỏ sẵn có, xem dưới */
 extern uint8_t *g_ram;       /* 2 MiB */
 extern uint8_t *g_scratch;   /* scratchpad */
 static inline void *G2H(gaddr a) {
@@ -25,11 +26,14 @@ static inline void *G2H(gaddr a) {
 gaddr H2G(const void *p);   /* chỉ nhận con trỏ nằm trong g_ram/g_scratch hoặc NULL; ngoài vùng thì abort kèm log */
 #else
 #define GPTR(T) T *
+#define GPTR_FN(T) T
 #define G2H(a) ((void *)(a))
 #define H2G(p) (p)
 #endif
 ```
 Phép mask thay thế toàn bộ cơ chế trap/decode lệnh x86 mà `image.c` dùng cho vùng mirror `0x10000..0x200000`. `NULL` guest là `0`, và `G2H(0)` phải trả về `NULL` (xử lý riêng trường hợp này). Kích thước scratchpad đúng là 1KB; upstream map cả trang 4KB, nên cần xác minh trong T1.1.
+
+`GPTR_FN(T)` (phát hiện ở T0.7, xem `docs/macos/reports/m0-codemod-prototype.md`): dùng cho field được khai báo **qua một typedef đã là con trỏ sẵn** (ví dụ `typedef void (*Foo)(); Foo callback;`) — field này không tự viết dấu `*`, nên `GPTR(T)` (thêm `*` ở nhánh không-LP64) sẽ sai kiểu (con trỏ-tới-con-trỏ). `GPTR_FN(T)` không thêm `*`. Field con trỏ khai báo trực tiếp (`T *f`, `T *f[N]`) vẫn dùng `GPTR`.
 
 ## ADR-03 — Biến global của game — Accepted (chốt ở T0.6, xem `docs/macos/reports/m0-build-anatomy.md`)
 **Bối cảnh (đã sửa sau T0.6 — bản cũ nói sai).** Upstream **không** link phần lớn biến game tại địa chỉ retail. Có hai cơ chế tách biệt: (1) `FIXED_SECTIONS` (`game_text=0x01000000`, `game_data=0x04000000`, `game_bss=0x05000000`, `build_game32.py:123-124`) — địa chỉ **tự chọn của build, không phải retail** — nơi code/data C đã biên dịch của build này nằm, cố định chỉ để save-state giữ được con trỏ native ổn định qua rebuild; dựa vào `-fno-pie` (tắt PIE) và `-Wl,--section-start` (cú pháp GNU `ld`). (2) `guest_symbols.ld` (từ `config/pc/guest_addresses.txt`) — pin **giá trị đúng địa chỉ retail** `0x800xxxxx` cho các symbol được tham chiếu nhưng chưa có định nghĩa trong build (ví dụ biến của overlay chưa link); hoạt động được như con trỏ thật vì RAM guest đang map tại `0x80000000` (ADR-01).
@@ -42,7 +46,7 @@ Field `GPTR(fn)` lưu **địa chỉ retail** của hàm. Bảng `g_fn_table` (�
 ## ADR-05 — Codemod thay vì diff — Accepted
 LP64 là một **phép biến đổi được mã hoá**, chứ không phải một bộ patch. `tools/pc/lp64/codemod.py` dùng libclang (Python binding, đúng phong cách tools của upstream). Nó đọc `src/`, ghi kết quả vào `tmp/lp64/src/`, và build LP64 compile từ cây output đó. Những chỗ không tự suy ra được được khai báo trong `config/lp64/overrides.toml` theo `file + function + pattern` (không theo số dòng) để sống sót qua các lần sync upstream. Tiêu chí thành công: sync upstream thì chỉ cần chạy lại codemod; override mới chỉ phát sinh khi upstream thêm pattern mới.
 Các biến đổi chính:
-1. Field con trỏ trong struct/union → `GPTR(T)`.
+1. Field con trỏ trong struct/union → `GPTR(T)`; field khai báo qua typedef con trỏ sẵn có (ví dụ callback) → `GPTR_FN(T)` (xem ADR-02, phát hiện ở T0.7 — 1/15 field trong prototype 5 struct cần dạng này).
 2. Đọc field con trỏ → `((T *)G2H(x.f))`; ghi field con trỏ → `x.f = H2G(p)`.
 3. Hằng số ép kiểu con trỏ `(T *)0x800xxxxx` → `(T *)G2H(0x800xxxxx)`.
 4. Số học con trỏ trên field guest: tính trên host pointer rồi `H2G` lại.
