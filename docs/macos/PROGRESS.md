@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T1.3
+**Task hiện tại:** T1.4a
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -21,7 +21,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ### M1 — Title screen
 - [x] T1.1 gptr.h và test
 - [x] T1.2 Image guest trên macOS
-- [ ] T1.3 Codemod struct và kiểm tra layout
+- [x] T1.3 Codemod struct và kiểm tra layout
 - [ ] T1.4a SDK · [ ] T1.4b ai_* · [ ] T1.4c func_800[0-3] · [ ] T1.4d phần còn lại của src/game · [ ] T1.4e pc/overrides, compat, packets
 - [ ] T1.5 Globals
 - [ ] T1.6 Bảng con trỏ hàm và GCALL
@@ -55,6 +55,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
 |---|---|---|---|
+| 2026-10-01 | Mở rộng codemod T1.3 xử lý luôn `long`/`unsigned long` trần → `s32`/`u32` | ADR-05 (mục 8) | Layout check lộ ra 30 struct khác layout không do con trỏ: `long` 4 byte trên i386 nhưng 8 byte trên mọi ABI C 64-bit gốc (kể cả arm64 macOS), không liên quan `MEMORIES_LP64`. Fen duyệt gộp vào codemod hiện tại thay vì tách task riêng. 156 field, 10 header (chủ yếu PSY-Q SDK). Chi tiết: `docs/macos/reports/m1-codemod-stage1.md`. |
 | 2026-09-29 | **Gate G0: GO** — tiếp tục M1 | — | Fen quyết định dựa trên T0.5 (census LP64: 64/546 unit pass, baseline) và T0.7 (prototype codemod 5 struct: layout khớp tuyệt đối, idempotent, chỉ 1/15 field (6.7%) cần override dạng `GPTR_FN`, dưới xa ngưỡng 30%). Không có tín hiệu nào cho thấy cần xét lại ADR-05 hay lộ trình 15–25 tuần. |
 | 2026-09-29 | ADR-03 → Accepted, giữ hướng "global sống trong RAM guest" | ADR-03 | Cơ chế fixed-address hiện tại của build (FIXED_SECTIONS, `-fno-pie` + `--section-start`) không tái tạo được trên arm64 macOS (PIE bắt buộc, `ld64` khác cú pháp); dùng lại `G2H`/`H2G` cho cả global lẫn field tránh phải duy trì 2 cơ chế song song. Bối cảnh ADR-03 bản cũ ghi sai (nói toàn bộ biến link tại địa chỉ retail) — đã sửa. Chi tiết: `docs/macos/reports/m0-build-anatomy.md`. |
 | 2026-09-29 | Thêm macro `GPTR_FN(T)` vào ADR-02/05 | ADR-02, ADR-05 | Prototype codemod T0.7 phát hiện: field khai báo qua typedef con trỏ sẵn có (callback) bị `GPTR(T)` nhân đôi dấu `*` ở nhánh không-LP64. `GPTR_FN(T)` không thêm `*`. 1/15 field trong prototype cần dạng này (6.7%, dưới ngưỡng 30% Gate G0). Chi tiết: `docs/macos/reports/m0-codemod-prototype.md`. |
@@ -68,8 +69,10 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - Cocoa event loop khi chạy trên stack game riêng (ADR-09) — kiểm tra ở T1.8.
 - `mmap(..., MAP_FIXED_NOREPLACE | MAP_ANONYMOUS, ...)` cho stack game (`state.c:1003`) không build được trên macOS (2 flag không tồn tại) — cần thay bằng `MAP_ANON` + kiểm tra thủ công thay `MAP_FIXED_NOREPLACE`. `ucontext` bên dưới đã tự test chạy tốt trên arm64, không phải blocker.
 - `objcopy --weaken-symbol` (native override thắng game code) không hỗ trợ Mach-O (`llvm-objcopy` báo lỗi thẳng) — cần cơ chế khác (`__attribute__((weak))` lúc compile) ở M1.
+- Section attribute kiểu ELF (`__attribute__((section(".data")))`) không parse được trên Mach-O — đã biết từ T0.4, giờ xác định đúng 2 file cụ thể còn lỗi sau codemod T1.3: `src/game/display_object_helpers.h:60`, `src/game/mem_card_work.h:88-93`. Cần `#if defined(__APPLE__)` riêng, ngoài phạm vi codemod LP64 (không phải con trỏ/long).
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-10-01 — T1.3 xong. Tổng quát hoá `codemod.py` từ 5 struct cố định (T0.7) sang **mọi** struct/union trong 586 header thuộc 4 pattern milestone (`src/*.h`, `game/**`, `overlays/**`, `psyq/*`) — quy mô thật: 126 struct, 353 field con trỏ, 48 header. Layout check đầu tiên lộ ra 30 struct lệch **không do con trỏ**: field `long`/`unsigned long` trần (4 byte i386, 8 byte mọi ABI 64-bit gốc kể cả arm64) — fen duyệt mở rộng codemod xử lý luôn (→ `s32`/`u32`, 156 field, 10 header, ghi vào ADR-05 mục 8). Trong lúc làm vấp phải và sửa **6 bug**: (1) byte-offset libclang lệch char-offset Python string khi có non-ASCII — chuyển hẳn sang xử lý `bytes`; (2) `get_children()` bỏ sót struct ẩn danh lồng nhau — đổi `walk_preorder()`; (3) `walk_preorder` đôi khi duyệt trùng đúng 1 struct (anonymous+typedef) — thêm `seen_records` khử trùng; (4) (nhắc lại từ T0.7) `field.type.kind` báo `ELABORATED` không phải `TYPEDEF` cho field qua typedef; (5) `cursor.spelling` của struct ẩn danh trả về tên typedef, trông như tag thật — dùng `cursor.is_anonymous()`; (6) khai báo nhiều biến chung kiểu (`long a, b;`, 1256 field toàn scope) có `field.extent` CHỒNG LẤN giữa các declarator — phải gom nhóm sửa 1 lần, không sửa từng field. Thêm 2 bug riêng trong `check_layouts_lp64.py` mới viết: lọc diagnostic theo `>= Fatal` bỏ sót lỗi `Error` (include hỏng vẫn "phục hồi" được), và pattern-match text "not found" bỏ sót lỗi downstream (`"unknown type name 's32'"`) — sửa đồng thời cả `codemod.py` vì cùng bug. Kết quả cuối: **0 khác biệt layout**, idempotent, static assert `ygo_types.h` pass LP64. Chi tiết đầy đủ: `docs/macos/reports/m1-codemod-stage1.md`.
 - 2026-09-29 — T1.2 xong. `src/pc/guest/image_lp64.c`: `Memories_GuestMap` dùng `malloc` thường cho `g_ram`/`g_scratch` (không cần trap/mirror, khác ILP32); `Memories_GuestLoadExeData` giữ y hệt logic đọc header PS-X EXE của `image.c`, chỉ đổi `memcpy((void*)address,...)` → `memcpy(G2H(address),...)`. Test `tests/pc/image_test.c` đọc **disc thật** qua `MEMORIES_DISC` (dùng `GameFiles_Disc`/`GameFiles_ReadExecutable` có sẵn, không mock) — skip (77) nếu thiếu/không hợp lệ, đúng pattern `SKIP_RETURN_CODE` đã có trong repo. Tự verify pass thật với file mod `Drop 15 Card 722 Full.bin` (file mod kia `YGOFM Mod 2023 15x.bin` bị `GameFiles_Disc` từ chối, không rõ lý do, không điều tra thêm vì ngoài scope): so 16 byte tại entry point giữa file và `G2H(entry)` khớp 100%. Không hồi quy: 30/61 fail (61 = 60 + `pc_image` mới), vẫn đúng 30 như T1.1. Chi tiết: `docs/macos/reports/m1-image.md`.
 - 2026-09-29 — T1.1 xong. Hoàn thiện `src/pc/guest/gptr.h` + `src/pc/guest/gptr_lp64.c` (H2G, `g_ram`/`g_scratch` storage). **Bug tìm thấy:** `G2H(0)` bản T0.7 không trả về NULL (underflow unsigned che mất case này) — đã sửa. **Xác minh scratchpad:** `image.c` map 4KB (`0x1000`) trên cả Windows/POSIX nhưng scratchpad thật PS1 chỉ 1KB — giữ nguyên biên `0x400` trong `G2H`, không cần sửa gì. `tests/pc/gptr_test.c` pass cả 4 tiêu chí (G2H(0)==NULL, 3 mirror KSEG0/1/KUSEG cùng 1 byte, H2G chuẩn hoá KSEG0, con trỏ ngoài vùng abort — test bằng fork+exec). CMake: option `MEMORIES_LP64` mới (mặc định OFF), test `pc_gptr` chỉ đăng ký khi bật (đã xác minh build mặc định không có target này). Không hồi quy: 30/60 test fail với `-DMEMORIES_LP64=ON -k 0`, khớp đúng con số T0.4 (chỉ thêm 1 test mới pass). Chi tiết: `docs/macos/reports/m1-gptr.md`.
 - 2026-09-29 — **Gate G0: GO.** Fen chốt tiếp tục M1 dựa trên số liệu T0.5/T0.7. Task hiện tại → T1.1.

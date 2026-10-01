@@ -53,6 +53,7 @@ Các biến đổi chính:
 5. Global → theo ADR-03.
 6. Gọi qua con trỏ hàm lấy từ guest → `GCALL`.
 7. (M5) Định nghĩa hàm game `foo` → `foo__impl` cộng với stub dispatch (ADR-06).
+8. Field khai báo kiểu `long`/`unsigned long` trần (không qua typedef) → `s32`/`u32` (phát hiện ở T1.3, xem `docs/macos/reports/m1-codemod-stage1.md`): `long` 4 byte trên i386 nhưng 8 byte trên mọi ABI C 64-bit gốc kể cả arm64 macOS — không liên quan con trỏ, nhưng cùng layout check T1.3 bắt được nên gộp cùng codemod này thay vì tách task riêng. 30 struct trong PSY-Q SDK header bị ảnh hưởng (156 field).
 
 ## ADR-06 — Hook mod bằng dispatch stub — Accepted
 Apple Silicon áp W^X cho `__TEXT`, nên cách patch `jmp *slot` vào NOP (`src/pc/mods/hooks.c`, `-fpatchable-function-entry`) không dùng được. Thay vào đó, mỗi hàm game hook được có một stub assembly sinh tự động:
