@@ -14,14 +14,35 @@ Reads from --in-dir (default src), writes the transformed copies under --out
 into --in-dir. Idempotent: transforming its own output again produces
 byte-identical text (see each case below for how it stays so).
 
-T1.4a adds a second, much narrower job: every *.c under CODE_GLOBS (today
-just src/psyq/*.c -- the forbidden-to-hand-edit *.c files ADR-05 (2)/(3)/(4)/
-(6) can still reach) gets config/lp64/overrides.toml's literal substitutions
-applied and is copied to --out, so its own relative #includes (e.g.
-"../types.h") resolve against the already-transformed tree rather than the
-original src/. No AST pass runs over these -- see CODE_GLOBS's own comment
-and docs/macos/reports/m1-codemod-stage2a.md for why this batch did not need
-one.
+T1.4a adds a second, much narrower job: every *.c under CODE_GLOBS gets
+config/lp64/overrides.toml's literal substitutions applied and is copied to
+--out, so its own relative #includes (e.g. "../types.h") resolve against the
+already-transformed tree rather than the original src/. T1.4a's own file
+(src/psyq/startup_data.c) needed nothing past that -- see
+docs/macos/reports/m1-codemod-stage2a.md for why a generic AST pass was not
+worth building for its ~9-site scope.
+
+T1.4b adds the AST pass T1.4a skipped, now that src/game/*.c -- all
+forbidden to hand-edit -- needs ADR-05 (2)/(4) applied to real, repeating
+code (transform_c_expressions): a gaddr-typed struct field read as a pointer
+(cast to one, or dereferenced -- possibly via `*field++`, common for a byte
+cursor) gets G2H; a real host pointer written into one gets H2G; a
+gaddr-to-gaddr copy, or a gaddr field used as the plain integer it already
+is (arithmetic, a `+=`, comparisons), needs neither and is left alone. The
+field's pointee type T (for the G2H cast) cannot be read back from the
+parsed type once MEMORIES_LP64 is defined -- GPTR(T) has already erased to
+gaddr by then -- so it is recovered from the field's own GPTR(T)/GPTR_FN(T)
+declaration text instead (field_pointee). Anything this cannot classify
+confidently aborts and asks for a config/lp64/overrides.toml entry rather
+than guess: wrongly adding H2G is loud (H2G aborts on a pointer outside
+g_ram/g_scratch, ADR-02), but wrongly *omitting* H2G around a real pointer
+is silent (the stored gaddr just reads back wrong later) -- see
+docs/macos/reports/m1-codemod-stage2b.md for the full reasoning and the
+three sites it would have missed if it guessed instead of refusing.
+overrides.toml's substitutions now also apply to *.h, not just *.c (needed
+for src/unmatched.h, a third location of the known Mach-O section-attribute
+hazard already tracked in docs/macos/PROGRESS.md's "Vấn đề mở" -- same class
+as src/game/display_object_helpers.h and mem_card_work.h).
 
 Four field shapes, four strategies:
   1. Pointer/array-of-pointer declared directly (`T *f`, `T *f[N]`) -> GPTR.
@@ -59,24 +80,30 @@ second (text-splicing runs back-to-front) slices into text the first edit
 already rewrote, corrupting both. Consecutive fields sharing one extent
 start are therefore grouped and edited as a unit (group_replacement below),
 never one declarator at a time."""
-import argparse, glob, os, subprocess, sys, tomllib
+import argparse, glob, os, re, subprocess, sys, tomllib
 import clang.cindex as cindex
 
 INLINE_FN_PTR_MARKER = b"/* lp64: inline fn ptr */"
 
 DEFAULT_GLOBS = ["*.h", "game/**/*.h", "overlays/**/*.h", "psyq/*.h"]  # relative to --in-dir
 
-# T1.4a: just the one *.c under src/psyq (the only directory in the
-# hand-edit-forbidden list -- CLAUDE.md -- that has one); its expression-level
-# fixes can only reach it through this codemod, via config/lp64/overrides.toml
-# (see apply_overrides). src/pc/sdk's *.c files are NOT listed here: they are
-# outside the forbidden list, so T1.4a fixed their handful of real ADR-05
-# (2)/(3) sites directly in source, #ifdef MEMORIES_LP64-guarded (see
-# docs/macos/reports/m1-codemod-stage2a.md) -- a generic AST-driven .c
-# expression pass was not worth building for the ~9 sites the whole batch
-# had. Later T1.4 batches touching src/game/src/overlays *.c (forbidden to
-# hand-edit) will likely need to extend this list and this function.
-CODE_GLOBS = ["psyq/*.c"]
+# *.c this codemod also processes (always via config/lp64/overrides.toml;
+# src/game and src/overlays additionally get transform_c_expressions, see the
+# module docstring). psyq/*.c is the only directory in CLAUDE.md's
+# hand-edit-forbidden list with *.c files at all -- its one file needed
+# nothing past overrides.toml (T1.4a). src/pc/sdk's *.c files are NOT listed
+# here: outside the forbidden list, so T1.4a fixed their handful of real
+# ADR-05 (2)/(3) sites directly in source instead, #ifdef MEMORIES_LP64-
+# guarded (docs/macos/reports/m1-codemod-stage2a.md). Later T1.4 batches add
+# their own src/game/src/overlays patterns here.
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c"]
+
+# src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
+# additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
+# just literal substitutions). src/psyq/*.c's one file needed nothing past
+# overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
+# batch reaches it.
+EXPR_GLOBS = ["game/ai_*.c"]
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
@@ -99,6 +126,18 @@ def sdk_path():
     # so <stdint.h> et al are otherwise not found.
     try:
         return subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def resource_dir():
+    # Only needed for code_clang_args below: a --target=arm64-apple-macos
+    # parse (unlike the header passes, which take no --target and so use
+    # whatever libclang itself was built for) does not find clang's own
+    # freestanding headers (stdint.h et al) without this.
+    try:
+        return subprocess.run(["clang", "-print-resource-dir"], capture_output=True,
                               text=True, check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -137,6 +176,50 @@ def parse(path, include_dir):
         # but whose own symptom is "unknown type name 's32'" (downstream of
         # the missing include, never mentioning a filename) at Error, not
         # Fatal, severity. Retry on any Error.
+        broken = [d for d in tu.diagnostics if d.severity >= cindex.Diagnostic.Error]
+        if not broken:
+            return tu
+        last = tu
+    return last
+
+
+def code_clang_args(out_dir, in_dir, prelude):
+    # Unlike clang_args: --target=arm64-apple-macos (needs -resource-dir to
+    # still find stdint.h et al) and -DMEMORIES_LP64 are both deliberate here
+    # -- transform_c_expressions needs to see gaddr, which only exists once
+    # LP64 is on, and only matters for the arm64 LP64 target this is all for.
+    # -I{out_dir} first: the file being parsed already lives under out_dir
+    # (transform_code_file writes it there before parsing), so its own
+    # same-directory or ../-relative #includes resolve against the
+    # already-transformed tree. gptr.h is always the real one (in_dir, not
+    # out_dir): it has no pointer fields of its own, so CODE_GLOBS/DEFAULT_GLOBS
+    # never copy it (see check_layouts_lp64.py's clang_args for the same point).
+    args = ["--target=arm64-apple-macos", "-std=gnu11", "-DMEMORIES_PC", "-D_LANGUAGE_C",
+            "-DLANGUAGE_C", "-DMEMORIES_LP64", "-ferror-limit=0",
+            f"-I{out_dir}", "-include", os.path.join(in_dir, "pc/guest/gptr.h")]
+    if prelude:
+        args += ["-isystem", os.path.join(out_dir, "psyq"),
+                  "-include", os.path.join(out_dir, "psyq/libgte.h"),
+                  "-include", os.path.join(out_dir, "psyq/libgpu.h"),
+                  "-include", os.path.join(out_dir, "psyq/libgs.h")]
+    sdk = sdk_path()
+    if sdk:
+        args += ["-isysroot", sdk]
+    resdir = resource_dir()
+    if resdir:
+        args += ["-resource-dir", resdir]
+    return args
+
+
+def parse_code(path, out_dir, in_dir):
+    """Like parse(), but for transform_c_expressions: full function bodies
+    (not PARSE_SKIP_FUNCTION_BODIES -- the whole point is to walk into them),
+    arm64 + MEMORIES_LP64 (parse() deliberately omits both; see its own
+    docstring and the module docstring for why they differ)."""
+    idx = cindex.Index.create()
+    last = None
+    for prelude in (False, True):
+        tu = idx.parse(path, args=code_clang_args(out_dir, in_dir, prelude))
         broken = [d for d in tu.diagnostics if d.severity >= cindex.Diagnostic.Error]
         if not broken:
             return tu
@@ -327,6 +410,28 @@ def transform_bytes(data, tu, filename):
     return out, len(edits)
 
 
+MACH_O_SECTION_RE = re.compile(rb'__attribute__\(\(section\("([^",]*)"\)\)\)')
+
+
+def fix_mach_o_sections(data):
+    """`__attribute__((section("name")))` -> `__attribute__((MEMORIES_SECTION("name")))`,
+    project-wide, every file this codemod writes (headers and *.c alike) --
+    ADR-05, a hazard class unrelated to pointers/longs: ELF and PE accept a
+    bare section name, Mach-O requires "SEGMENT,section" ("mach-o section
+    specifier requires a segment and section separated by a comma"). 265
+    occurrences across 58 files when this was written (T1.4b), after hand
+    patching 3 of them one file at a time (T1.4a/b) made clear this needed a
+    general rule, not a growing pile of config/lp64/overrides.toml entries
+    for each file a later batch happens to reach -- see
+    docs/macos/reports/m1-codemod-stage2b.md. MEMORIES_SECTION
+    (src/pc/guest/gptr.h, always -include'd, see ADR-02) expands per-platform,
+    so no #ifdef wrapping is needed at each site, unlike the three it
+    replaces. [^",]* excludes an already-comma-shaped (already Mach-O) name,
+    so a second pass over this function's own output has nothing left to
+    match -- idempotent without needing a separate marker."""
+    return MACH_O_SECTION_RE.sub(rb'__attribute__((MEMORIES_SECTION("\1")))', data)
+
+
 def load_overrides(path):
     """config/lp64/overrides.toml's [[override]] entries, or [] if the file
     does not exist (so the tool stays usable before any override is needed)."""
@@ -359,26 +464,327 @@ def apply_overrides(data, relpath, overrides):
     return data
 
 
-def transform_code_file(path, out_path, relpath, overrides):
+GPTR_FIELD_RE = re.compile(r"GPTR(_FN)?\(([^)]*)\)")
+
+TRANSPARENT_WRAPPER_KINDS = (cindex.CursorKind.PAREN_EXPR, cindex.CursorKind.UNEXPOSED_EXPR)
+
+TRANSLATE_CALLS = ("G2H", "H2G")
+
+
+def is_gaddr_type(t):
+    return t.spelling == "gaddr" or t.get_canonical().spelling == "gaddr"
+
+
+def build_parent_map(cursor, parent_map, parent=None):
+    """cursor.hash -> its parent cursor (or None for the TU root), for every
+    cursor in the tree. libclang gives children but not parents; the
+    classifiers below all need "what is this expression's role in its
+    enclosing one" (assignment LHS? cast operand? deref target?), which
+    needs walking upward."""
+    parent_map[cursor.hash] = parent
+    for child in cursor.get_children():
+        build_parent_map(child, parent_map, cursor)
+
+
+def skip_transparent(cursor, parent_map):
+    """The nearest ancestor of `cursor` that is not a paren or an implicit
+    cast libclang exposes as UNEXPOSED_EXPR -- both are invisible in the
+    original text, so a classifier asking "what construct directly contains
+    this" wants the first one that actually appears in source."""
+    node = parent_map.get(cursor.hash)
+    while node is not None and node.kind in TRANSPARENT_WRAPPER_KINDS:
+        node = parent_map.get(node.hash)
+    return node
+
+
+def unwrap_transparent(cursor):
+    """skip_transparent's downward counterpart: the innermost cursor inside
+    a chain of transparent wrappers. Needed for an assignment's RHS
+    specifically because the code being transformed is, by construction,
+    still type-incorrect (that is the whole reason it needs transforming) --
+    clang's error recovery wraps a RHS whose type does not match the LHS
+    field's (gaddr) in an implicit UNEXPOSED_EXPR node that reports the
+    LHS's type, not the RHS expression's own, which would make every write
+    look like it is already gaddr-typed and need no edit. Unwrapping finds
+    the real expression (and its real type) underneath."""
+    while cursor.kind in TRANSPARENT_WRAPPER_KINDS:
+        children = list(cursor.get_children())
+        if len(children) != 1:
+            break
+        cursor = children[0]
+    return cursor
+
+
+def wraps_dereference(node, data):
+    """True if `node` represents `*inner` for whatever its own single child
+    is. A proper UNARY_OPERATOR(*) cursor only shows up when the operand's
+    type actually supports dereferencing; gaddr never does, so clang's error
+    recovery (this code being transformed is by construction still
+    type-incorrect) instead produces a plain UNEXPOSED_EXPR of "<dependent
+    type>" whose own extent is still the real `*...` source text -- checked
+    here the only way left available, by its first byte."""
+    if node.kind == cindex.CursorKind.UNARY_OPERATOR:
+        return unary_operator(node) == "*"
+    if node.kind == cindex.CursorKind.UNEXPOSED_EXPR:
+        return data[node.extent.start.offset:node.extent.start.offset + 1] == b"*"
+    return False
+
+
+def already_translated(cursor, parent_map):
+    """True if `cursor` sits directly inside a G2H(...)/H2G(...) call --
+    idempotency: a second pass over this same codemod's own *.c output must
+    not wrap an already-wrapped site again. There is no marker comment to
+    check here (unlike the header cases): the call itself is the marker."""
+    node = skip_transparent(cursor, parent_map)
+    return node is not None and node.kind == cindex.CursorKind.CALL_EXPR and node.spelling in TRANSLATE_CALLS
+
+
+def binop_operator(cursor):
+    """The operator token of a BINARY_OPERATOR/COMPOUND_ASSIGNMENT_OPERATOR
+    cursor -- libclang's Cursor has no direct accessor for this, only the
+    token lying between the LHS's and RHS's extents."""
+    children = list(cursor.get_children())
+    if len(children) != 2:
+        return None
+    lhs, rhs = children
+    for tok in cursor.get_tokens():
+        if tok.extent.start.offset >= lhs.extent.end.offset and tok.extent.end.offset <= rhs.extent.start.offset:
+            return tok.spelling
+    return None
+
+
+def unary_operator(cursor):
+    """The operator token of a UNARY_OPERATOR cursor, prefix or postfix --
+    same "libclang does not expose this directly" situation as
+    binop_operator, distinguished here by whether the operand's extent
+    starts where the whole expression's extent does (postfix: operand first)
+    or not (prefix: operator first)."""
+    children = list(cursor.get_children())
+    if len(children) != 1:
+        return None
+    operand = children[0]
+    toks = list(cursor.get_tokens())
+    if not toks:
+        return None
+    if cursor.extent.start.offset == operand.extent.start.offset:
+        return toks[-1].spelling  # postfix
+    return toks[0].spelling  # prefix
+
+
+def is_assign_lhs(assign_cursor, member_cursor):
+    children = list(assign_cursor.get_children())
+    return bool(children) and children[0].extent.start.offset == member_cursor.extent.start.offset \
+        and children[0].extent.end.offset == member_cursor.extent.end.offset
+
+
+def field_pointee(field_cursor, header_cache):
+    """(pointee type spelling, is_gptr_fn) for a gaddr FIELD_DECL, read from
+    its own GPTR(T)/GPTR_FN(T) declaration text -- the only place T still
+    exists. The parsed type cannot give it back: GPTR(T) has already expanded
+    to gaddr by the time MEMORIES_LP64 is defined, same as every other field
+    (that erasure is the whole point of the macro). None for a field whose
+    declaration is not a plain single-name GPTR(T)/GPTR_FN(T) call -- the
+    inline-function-pointer #ifdef block and the shared-declarator-group
+    #ifdef block (transform_bytes's case 3/the group path) do not have one;
+    no field in EXPR_GLOBS's scope has needed either shape yet, so this is
+    intentionally not handled -- add a config/lp64/overrides.toml entry if
+    one is found."""
+    path = str(field_cursor.location.file)
+    if path not in header_cache:
+        with open(path, "rb") as handle:
+            header_cache[path] = handle.read()
+    text = header_cache[path][field_cursor.extent.start.offset:field_cursor.extent.end.offset].decode("utf-8")
+    m = GPTR_FIELD_RE.search(text)
+    if m is None:
+        return None
+    return m.group(2).strip(), m.group(1) is not None
+
+
+def classify_write(rhs, data):
+    """Replacement (start, end, bytes) for the RHS of `x.f = rhs` (f gaddr),
+    or None if no edit is needed. Three shapes, by rhs's own kind/type:
+      - `(T *)expr` where expr is itself a pointer (a real pointer re-cast to
+        a different pointer type on its way into the field) -> drop the now
+        pointless cast and H2G the operand.
+      - `(T *)expr` where expr is NOT a pointer (e.g. `(u8 *)(offset)` where
+        `offset` is plain s32 arithmetic that was always a guest address, not
+        a host one -- AiScript_Jump's family) -> the cast was only ever there
+        to satisfy the old `u8 *` field type; drop it, keep expr verbatim.
+        H2G must NOT run here: its argument would be a guest-address-sized
+        integer wearing a pointer cast, not a real host pointer, and H2G
+        aborts on exactly that (outside g_ram/g_scratch) -- the one case
+        where guessing wrong is loud, not the dangerous direction, but still
+        wrong code.
+      - anything else with pointer type (no cast -- a bare pointer variable,
+        a dereference, &something, ...) -> a real host pointer -> H2G it.
+      - gaddr already, or a plain integer with no cast at all -> both valid
+        as-is (gaddr IS a uint32_t), no edit.
+    Anything not matching one of these (checked by the caller) aborts rather
+    than guess."""
+    if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR and rhs.type.kind == cindex.TypeKind.POINTER:
+        # get_children() on a CSTYLE_CAST_EXPR gives the destination type's
+        # own TYPE_REF first, then the operand -- the *last* child, not the
+        # first, and itself possibly wrapped (unwrap_transparent) in the
+        # same kind of implicit node described in unwrap_transparent's
+        # docstring.
+        operand = unwrap_transparent(list(rhs.get_children())[-1])
+        ostart, oend = operand.extent.start.offset, operand.extent.end.offset
+        if operand.type.kind == cindex.TypeKind.POINTER:
+            return (rhs.extent.start.offset, rhs.extent.end.offset, b"H2G(" + data[ostart:oend] + b")")
+        return (rhs.extent.start.offset, rhs.extent.end.offset, data[ostart:oend])
+    if rhs.type.kind == cindex.TypeKind.POINTER:
+        rstart, rend = rhs.extent.start.offset, rhs.extent.end.offset
+        return (rstart, rend, b"H2G(" + data[rstart:rend] + b")")
+    return None  # gaddr already, or a plain integer: both fine as-is
+
+
+def transform_c_expressions(data, tu, filename):
+    """Edits for ADR-05 (2)/(4) in a *.c file's function bodies -- see the
+    module docstring for the overall shape, classify_write's docstring for
+    the write side. Every gaddr-typed MEMBER_REF_EXPR in `filename` is
+    classified by its immediate (skip_transparent) parent; anything not one
+    of the shapes below aborts and asks for a config/lp64/overrides.toml
+    entry rather than silently leaving a type error (or worse, a wrong but
+    type-correct edit) for the compiler or a human to find later."""
+    parent_map = {}
+    build_parent_map(tu.cursor, parent_map)
+    header_cache = {}
+    edits = []
+
+    def pointee_or_exit(ref, context):
+        info = field_pointee(ref, header_cache)
+        if info is None:
+            sys.exit(f"error: {context}: cannot recover the pointee type of "
+                     f"{ref.spelling!r} (not a plain GPTR(T)/GPTR_FN(T) field) -- "
+                     f"add a config/lp64/overrides.toml entry")
+        return info
+
+    for cursor in tu.cursor.walk_preorder():
+        if cursor.kind != cindex.CursorKind.MEMBER_REF_EXPR:
+            continue
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        ref = cursor.referenced
+        if ref is None or not is_gaddr_type(ref.type):
+            continue
+        if already_translated(cursor, parent_map):
+            continue
+
+        parent = skip_transparent(cursor, parent_map)
+        start, end = cursor.extent.start.offset, cursor.extent.end.offset
+        context = f"{filename}:{cursor.location.line}"
+
+        if start == end:
+            # A gaddr field passed as a function-like macro's argument (e.g.
+            # `DISPLAY_OBJECT_VIEW(x.f)` expanding to `(T *)(x.f)`): libclang
+            # does not attribute a real file span to an AST node built from a
+            # macro argument used this way, so `extent` collapses to a
+            # zero-width point -- splicing at it would corrupt the file (an
+            # empty G2H() landing next to the untouched macro call, observed
+            # while building this). No general fix; add a
+            # config/lp64/overrides.toml entry for this exact call site.
+            sys.exit(f"error: {context}: {cursor.spelling!r} has a degenerate (macro-argument) "
+                     f"source extent -- add a config/lp64/overrides.toml entry")
+
+        if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
+                and is_assign_lhs(parent, cursor) and binop_operator(parent) == "=":
+            edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data)
+            if edit is not None:
+                edits.append(edit)
+            continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR \
+                and is_assign_lhs(parent, cursor):
+            rhs = unwrap_transparent(list(parent.get_children())[1])
+            if rhs.type.kind == cindex.TypeKind.POINTER:
+                sys.exit(f"error: {context}: compound assignment to {cursor.spelling!r} with a "
+                         f"pointer-typed RHS -- add a config/lp64/overrides.toml entry")
+            continue  # gaddr += <int>: already valid, same arithmetic either way
+
+        if parent is not None and parent.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
+            if parent.type.kind == cindex.TypeKind.POINTER:
+                edits.append((start, end, b"G2H(" + data[start:end] + b")"))
+            continue  # cast to a non-pointer type (e.g. (s32)x.f): already valid
+
+        if parent is not None and parent.kind == cindex.CursorKind.VAR_DECL:
+            # `T *p = x.f;`: a declaration's initializer, not a cast -- same
+            # "read as a pointer" shape, the pointer type just comes from the
+            # declaration instead of an explicit cast.
+            if parent.type.kind == cindex.TypeKind.POINTER:
+                edits.append((start, end, f"({parent.type.spelling})G2H(".encode() + data[start:end] + b")"))
+            continue  # declared as a non-pointer (e.g. `u32 x = f.field;`): already valid
+
+        # *x.f (a direct dereference, no cast): raw_parent, not skip_transparent's
+        # `parent` -- see wraps_dereference's docstring for why this never
+        # shows up as a clean UNARY_OPERATOR(*) cursor here.
+        raw_parent = parent_map.get(cursor.hash)
+        if raw_parent is not None and wraps_dereference(raw_parent, data):
+            pointee, is_fn = pointee_or_exit(ref, context)
+            cast = pointee if is_fn else f"{pointee} *"
+            edits.append((start, end, f"({cast})G2H(".encode() + data[start:end] + b")"))
+            continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.UNARY_OPERATOR:
+            op = unary_operator(parent)
+            if op in ("++", "--"):
+                raw_grandparent = parent_map.get(parent.hash)
+                if raw_grandparent is not None and wraps_dereference(raw_grandparent, data):
+                    # `*x.f++` and friends: the dereference needs G2H, but the
+                    # advance does not (it is pure guest-address arithmetic,
+                    # numerically identical whether applied to a real u8* or
+                    # the gaddr integer directly) -- wrap the whole `x.f++`,
+                    # leaving the outer `*` and the increment untouched.
+                    pointee, is_fn = pointee_or_exit(ref, context)
+                    cast = pointee if is_fn else f"{pointee} *"
+                    pstart, pend = parent.extent.start.offset, parent.extent.end.offset
+                    edits.append((pstart, pend, f"({cast})G2H(".encode() + data[pstart:pend] + b")"))
+                continue  # bare x.f++/--: pure guest-address arithmetic, no edit
+            continue
+
+        # Anything else (plain integer use: arithmetic operand, comparison,
+        # function argument typed as an integer, ...): gaddr already IS the
+        # right type here, no edit needed.
+
+    out = data
+    for start, end, replacement in sorted(edits, reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out, len(edits)
+
+
+def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, expr_pass):
     """A *.c file's codemod output: config/lp64/overrides.toml's literal
-    substitutions only (see CODE_GLOBS's comment for why this batch needs
-    nothing more -- no struct/union defined in scope needs ADR-05 (1)/(8),
-    and no GPTR-typed expression needing (2)/(3)/(4)/(6) was found in it)."""
+    substitutions, then (only for files under EXPR_GLOBS) transform_c_expressions
+    on the result. Writes to out_path before the expression pass parses it
+    (not the original path): that pass needs MEMORIES_LP64 and the file's own
+    relative #includes resolved against the already-transformed tree, both of
+    which only work from out_path's location under out_dir."""
     with open(path, "rb") as handle:
         data = handle.read()
+    data = fix_mach_o_sections(data)
     data = apply_overrides(data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:
         handle.write(data)
+    if not expr_pass:
+        return 0
+    tu = parse_code(out_path, out_dir, in_dir)
+    if tu is None:
+        sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
+    out_data, count = transform_c_expressions(data, tu, os.path.basename(path))
+    with open(out_path, "wb") as handle:
+        handle.write(out_data)
+    return count
 
 
-def transform_file(path, out_path, include_dir):
+def transform_file(path, out_path, include_dir, relpath, overrides):
     with open(path, "rb") as handle:
         data = handle.read()
     tu = parse(path, include_dir)
     if tu is None:
         sys.exit(f"{path}: could not parse (even with the psyq prelude)")
     out_data, count = transform_bytes(data, tu, os.path.basename(path))
+    out_data = fix_mach_o_sections(out_data)
+    out_data = apply_overrides(out_data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:
         handle.write(out_data)
@@ -400,7 +806,7 @@ def main():
     setup_libclang()
 
     if options.headers:
-        relative, code_relative = options.headers, []
+        relative, code_relative, expr_relative = options.headers, [], set()
     else:
         relative = sorted(
             os.path.relpath(path, options.in_dir)
@@ -412,6 +818,13 @@ def main():
             for pattern in CODE_GLOBS
             for path in glob.glob(os.path.join(options.in_dir, pattern), recursive=True)
         )
+        expr_relative = set(
+            os.path.relpath(path, options.in_dir)
+            for pattern in EXPR_GLOBS
+            for path in glob.glob(os.path.join(options.in_dir, pattern), recursive=True)
+        )
+
+    overrides = load_overrides(options.overrides)
 
     total_fields, total_files = 0, 0
     for header in relative:
@@ -419,7 +832,7 @@ def main():
         dst = os.path.join(options.out, header)
         if not os.path.exists(src):
             sys.exit(f"{src}: not found")
-        count = transform_file(src, dst, options.in_dir)
+        count = transform_file(src, dst, options.in_dir, header, overrides)
         if count:
             total_files += 1
         total_fields += count
@@ -427,14 +840,15 @@ def main():
           f"across {total_files} header(s)")
 
     if code_relative:
-        overrides = load_overrides(options.overrides)
+        total_expr = 0
         for relpath in code_relative:
             src = os.path.join(options.in_dir, relpath)
             dst = os.path.join(options.out, relpath)
             if not os.path.exists(src):
                 sys.exit(f"{src}: not found")
-            transform_code_file(src, dst, relpath, overrides)
-        print(f"{len(code_relative)} *.c file(s) processed (overrides only)")
+            total_expr += transform_code_file(src, dst, relpath, overrides, options.out,
+                                              options.in_dir, relpath in expr_relative)
+        print(f"{len(code_relative)} *.c file(s) processed, {total_expr} expression(s) transformed")
 
 
 if __name__ == "__main__":

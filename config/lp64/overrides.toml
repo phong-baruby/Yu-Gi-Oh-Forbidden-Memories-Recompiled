@@ -6,26 +6,41 @@
 # future upstream sync that changes or removes the matched text is caught
 # rather than silently skipped) and `pattern`, describing what kind of thing
 # this is, for grep-ability.
+#
+# The Mach-O section-attribute hazard (ELF/PE accept a bare
+# `__attribute__((section("name")))`; Mach-O needs "SEGMENT,name") does NOT
+# live here: after patching 3 individual sites here (T1.4a/b) and then
+# finding 265 more occurrences across 58 files, it became
+# tools/pc/lp64/codemod.py's fix_mach_o_sections, applied automatically to
+# every file this codemod writes -- see docs/macos/reports/m1-codemod-stage2b.md.
 
 [[override]]
-file = "psyq/startup_data.c"
-pattern = "mach-o-section-attribute"
+file = "game/ai_turn_action.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
 reason = """
-ELF/PE accept a bare `__attribute__((section(".data")))`; Mach-O requires a
-"SEGMENT,section" pair (clang: "mach-o section specifier requires a segment
-and section separated by a comma"). Same hazard class already known from
-T0.4/T1.3 (src/game/display_object_helpers.h, src/game/mem_card_work.h) --
-pointer/long width unrelated, just an object-format difference, so it does
-not fit any of the AST-driven transforms and is listed here instead. Fixed
-here rather than deferred like the other two because it directly blocks this
-file -- one of T1.4a's own batch -- from compiling at all under LP64.
+`DISPLAY_OBJECT_VIEW(object)` expands to `((DisplayObject *)(object))`; a
+gaddr field (source->ptr, entry->object -- both GPTR(void)) passed as
+`object` needs G2H around it, same as ADR-05 (2) anywhere else -- but
+transform_c_expressions cannot place that edit itself: libclang gives a
+MEMBER_REF_EXPR built from a function-like macro's argument a zero-width
+extent (no real file span to splice at), observed corrupting the file
+(an empty G2H() landing next to the untouched macro call) before this guard
+was added (transform_c_expressions aborts on it now, see its "degenerate
+(macro-argument) source extent" check). Fixed by G2H-wrapping the argument
+text directly, sidestepping AST-location edits for just this call shape.
 """
-old = """u32 D_800906E0 __attribute__((section(".data"))) = 0;
-u32 D_800906E4 __attribute__((section(".data"))) = 0;"""
-new = """#if defined(__APPLE__)
-u32 D_800906E0 __attribute__((section("__DATA,.data"))) = 0;
-u32 D_800906E4 __attribute__((section("__DATA,.data"))) = 0;
-#else
-u32 D_800906E0 __attribute__((section(".data"))) = 0;
-u32 D_800906E4 __attribute__((section(".data"))) = 0;
-#endif"""
+old = """            if (func_8001EFD4(DISPLAY_OBJECT_VIEW(source->ptr),
+                              DISPLAY_OBJECT_VIEW(entry->object)) > 0)"""
+new = """            if (func_8001EFD4(DISPLAY_OBJECT_VIEW(G2H(source->ptr)),
+                              DISPLAY_OBJECT_VIEW(G2H(entry->object))) > 0)"""
+
+[[override]]
+file = "game/ai_turn_action.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+reason = "Same as the override just above (see its reason) -- func_800278A0's own call to the same func_8001EFD4 pair."
+old = """                s32 result = func_8001EFD4(
+                    DISPLAY_OBJECT_VIEW(source->ptr),
+                    DISPLAY_OBJECT_VIEW(entry->object));"""
+new = """                s32 result = func_8001EFD4(
+                    DISPLAY_OBJECT_VIEW(G2H(source->ptr)),
+                    DISPLAY_OBJECT_VIEW(G2H(entry->object)));"""

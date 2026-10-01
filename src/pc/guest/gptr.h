@@ -8,6 +8,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* T1.4b: decompiled data placed at a fixed section (retail's `.data`/
+ * `.sdata`/`.sbss`) via `__attribute__((section(name)))` -- ELF and PE both
+ * accept that bare string, but Mach-O requires "SEGMENT,section". Orthogonal
+ * to MEMORIES_LP64 (object-format, not pointer width), so this is unguarded
+ * by it. Used as `__attribute__((MEMORIES_SECTION("name")))`, applied
+ * project-wide by tools/pc/lp64/codemod.py's fix_mach_o_sections (not by
+ * hand -- the attribute's own callers are in src/game, src/psyq etc.,
+ * forbidden to hand-edit; see docs/macos/reports/m1-codemod-stage2b.md). */
+#if defined(__APPLE__)
+#define MEMORIES_SECTION(name) section("__DATA," name)
+#else
+#define MEMORIES_SECTION(name) section(name)
+#endif
+
 #ifdef MEMORIES_LP64
 typedef uint32_t gaddr;
 
