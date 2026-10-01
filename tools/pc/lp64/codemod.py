@@ -96,14 +96,14 @@ DEFAULT_GLOBS = ["*.h", "game/**/*.h", "overlays/**/*.h", "psyq/*.h"]  # relativ
 # ADR-05 (2)/(3) sites directly in source instead, #ifdef MEMORIES_LP64-
 # guarded (docs/macos/reports/m1-codemod-stage2a.md). Later T1.4 batches add
 # their own src/game/src/overlays patterns here.
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c"]
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"]
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c"]
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"]
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
@@ -493,6 +493,16 @@ def is_gaddr_type(t):
     return t.spelling == "gaddr" or t.get_canonical().spelling == "gaddr"
 
 
+def is_pointer_like(t):
+    # An array-typed expression used as an rvalue decays to a pointer (e.g.
+    # `e->table = (ModelBurstPalette *)D_800916D4;` where D_800916D4 is
+    # `extern u32 D_800916D4[]` -- a real host array/global, T1.4d) --
+    # classify_write's "is this RHS a real pointer, needing H2G" checks need
+    # to recognize this the same way a cast or a real `T *` would, not just
+    # TypeKind.POINTER itself.
+    return t.kind == cindex.TypeKind.POINTER or t.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY)
+
+
 def build_parent_map(cursor, parent_map, parent=None):
     """cursor.hash -> its parent cursor (or None for the TU root), for every
     cursor in the tree. libclang gives children but not parents; the
@@ -659,10 +669,10 @@ def classify_write(rhs, data, context):
         operand = unwrap_transparent(list(rhs.get_children())[-1])
         degenerate_or_exit(operand, "cast operand")
         ostart, oend = operand.extent.start.offset, operand.extent.end.offset
-        if operand.type.kind == cindex.TypeKind.POINTER:
+        if is_pointer_like(operand.type):
             return (rhs.extent.start.offset, rhs.extent.end.offset, b"H2G(" + data[ostart:oend] + b")")
         return (rhs.extent.start.offset, rhs.extent.end.offset, data[ostart:oend])
-    if rhs.type.kind == cindex.TypeKind.POINTER:
+    if is_pointer_like(rhs.type):
         degenerate_or_exit(rhs, "pointer value")
         rstart, rend = rhs.extent.start.offset, rhs.extent.end.offset
         return (rstart, rend, b"H2G(" + data[rstart:rend] + b")")
@@ -741,6 +751,34 @@ def transform_c_expressions(data, tu, filename):
             edits.append((start, end, f"({cast})G2H(".encode() + data[start:end] + b")"))
             continue
 
+        # x.f->g (f itself gaddr, used as the base of a further `->` access,
+        # e.g. `object->record->field_30`, T1.4c/T1.4d's "chained field"
+        # overrides, generalized): checked purely textually, the character
+        # right after `cursor`'s own extent (which -- a MemberExpr's extent
+        # always includes its base, confirmed empirically -- spans the whole
+        # `object->record`, not just `record`) rather than via any parent at
+        # all. `object->record->field_30` degrades the same way a
+        # dereference does (wraps_dereference's docstring) -- no stable
+        # parent/raw_parent shape to route on -- but unlike a dereference,
+        # the text immediately following is reliable regardless: splicing in
+        # a cast+G2H right after `x.f`'s own span and leaving `->g` (and
+        # anything further right) untouched composes correctly without
+        # needing to know what encloses the whole chain.
+        if data[end:end + 2] == b"->":
+            # Extra outer parens matter here, unlike every other cast-insert
+            # in this function: `->` is a postfix operator, binding tighter
+            # than a C-style cast, so `(T *)G2H(x.f)->g` parses as
+            # `(T *)(G2H(x.f)->g)` -- applying `->g` to G2H's `void *`
+            # result first, not to the cast result -- wrong (found: this
+            # exact shape, missing its outer parens, while reviewing a
+            # diff). The dereference branch above does not need this: `*`
+            # is also prefix, so `*(T *)G2H(...)` already associates
+            # right-to-left correctly without extra grouping.
+            pointee, is_fn = pointee_or_exit(ref, context)
+            cast = pointee if is_fn else f"{pointee} *"
+            edits.append((start, end, f"(({cast})G2H(".encode() + data[start:end] + b"))"))
+            continue
+
         if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
                 and is_assign_lhs(parent, cursor) and binop_operator(parent) == "=":
             edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data, context)
@@ -817,21 +855,32 @@ def transform_c_expressions(data, tu, filename):
         if parent is not None and parent.kind == cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR:
             # x.f[i] where f is itself a gaddr *array* field (an array of
             # guest pointers, e.g. GPTR(T) f[N]) -- not f being indexed by a
-            # gaddr value, the array element x.f[i] as a whole being written.
-            # Only the write shape has come up so far (T1.4c); a read here
-            # would need the same per-grandparent dispatch classify_write's
-            # callers already do for a plain field, so this intentionally
-            # does not try to handle one preemptively -- it falls through to
-            # the catch-all below and the compiler will say so if one shows
-            # up (a -Wint-conversion the other way, reading a gaddr as if it
-            # already were a pointer, which -- per this file's asymmetry
-            # note -- is the loud direction to find out, not a silent one).
+            # gaddr value, the array element x.f[i] as a whole being read or
+            # written. Mirrors the plain-field write/VAR_DECL/plain-
+            # assignment-read branches above, one level up (on `parent`, the
+            # whole subscript expression, instead of `cursor`).
+            pstart, pend = parent.extent.start.offset, parent.extent.end.offset
             grandparent = skip_transparent(parent, parent_map)
             if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
                     and binop_operator(grandparent) == "=" and is_assign_lhs(grandparent, parent):
                 edit = classify_write(unwrap_transparent(list(grandparent.get_children())[1]), data, context)
                 if edit is not None:
                     edits.append(edit)
+                continue
+            if grandparent is not None and grandparent.kind == cindex.CursorKind.VAR_DECL:
+                if grandparent.type.kind == cindex.TypeKind.POINTER:
+                    edits.append((pstart, pend, f"({grandparent.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
+                continue
+            if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
+                    and binop_operator(grandparent) == "=" and not is_assign_lhs(grandparent, parent):
+                lhs = list(grandparent.get_children())[0]
+                if lhs.type.kind == cindex.TypeKind.POINTER:
+                    edits.append((pstart, pend, f"({lhs.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
+                continue
+            # Anything else reading x.f[i] (a cast, a call argument, a plain
+            # comparison, ...): not seen yet in this batch -- falls through
+            # to the catch-all below rather than guess, same as everywhere
+            # else in this function.
             continue
 
         # Anything else (plain integer use: arithmetic operand, comparison,
@@ -843,6 +892,27 @@ def transform_c_expressions(data, tu, filename):
         # genuinely broken on purpose (fen's call, T1.4c) until GCALL exists
         # (ADR-04, T1.6) -- see docs/macos/reports/m1-codemod-stage2c.md for
         # the one site this applied to (func_80014294.c's phase_callback).
+
+    # Two edits can nest: classify_write (and the CALL_EXPR-argument branch's
+    # bare G2H wrap, when its target itself sits inside a write) build a
+    # replacement by copying a sub-range of `data` verbatim, e.g. the whole
+    # RHS of `x.f = (T *)fn(a, y.g)` -- if that sub-range itself contains
+    # ANOTHER gaddr field (y.g above) needing its own edit, splicing both
+    # independently corrupts the file: the outer edit's copy predates the
+    # inner one, so the two ranges overlap on top of each other. Found as
+    # exactly that -- `H2G(GsMapCoordUnit(...ev.ptr))ptr));`, mangled
+    # trailing text -- composing them correctly (apply the inner edit inside
+    # the outer one's own copy, recursively) is possible but not implemented
+    # here; aborting is safe and the one site found so far was fixed with a
+    # config/lp64/overrides.toml entry instead (T1.4d).
+    ordered = sorted(edits, key=lambda e: (e[0], -e[1]))
+    for i, (start, end, _) in enumerate(ordered):
+        for other_start, other_end, _ in ordered[i + 1:]:
+            if other_start >= end:
+                break
+            sys.exit(f"error: {filename}: nested edits at offsets {start}-{end} and "
+                     f"{other_start}-{other_end} -- add a config/lp64/overrides.toml entry "
+                     f"for the outer one (see transform_c_expressions's final comment)")
 
     out = data
     for start, end, replacement in sorted(edits, reverse=True):

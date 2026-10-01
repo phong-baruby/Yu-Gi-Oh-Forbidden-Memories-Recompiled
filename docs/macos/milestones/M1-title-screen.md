@@ -24,8 +24,9 @@
   - T1.4a: `src/psyq` và `src/pc/sdk` (lớp SDK trước, để game build lên trên được).
   - T1.4b: `src/game/ai_*`
   - T1.4c: `src/game/func_800[0-3]*`
-  - T1.4d: `src/game/func_800[4-9]*` và phần còn lại của `src/game`
+  - T1.4d: `src/game/func_800[4-9]*` (64 file)
   - T1.4e: `src/pc/overrides`, `src/pc/compat` (GTE, libgs_ot) và `src/pc/render/packets.c` (packet GPU chứa địa chỉ 24-bit)
+  - T1.4f: phần còn lại của `src/game` (352 file đặt tên theo hàm, không phải `func_800...`) — tách khỏi T1.4d ngày 2026-10-01 vì gộp chung 416 file là quá lớn cho một phiên (T1.4c, 78 file, đã cần một phiên rất dài); đo quy mô thật và chia nhỏ tiếp khi tới lượt, theo đúng cách T1.4c/T1.4d đã làm.
   - Overlay dời sang M3.
 - **Quy tắc:** chỗ nào không suy ra được thì thêm entry vào `config/lp64/overrides.toml` kèm comment lý do. Không sửa `src/`.
 - **Acceptance mỗi batch:** mọi unit trong batch compile sạch ở LP64 với `-Werror=int-conversion -Werror=pointer-to-int-cast -Werror=int-to-pointer-cast`; census tăng đúng bằng số unit của batch.

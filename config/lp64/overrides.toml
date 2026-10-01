@@ -187,3 +187,185 @@ pattern = "gaddr-field-write-from-function-like-macro-argument"
 reason = "Same as the override above (see its reason) -- lists[1].cursor_box."
 old = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].cursor_box = DISPLAY_OBJECT_VIEW(object);"
 new = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].cursor_box = H2G(object);"
+
+[[override]]
+file = "game/func_8004CB0C.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+all = true
+reason = """
+`GS_COORD_UNIT_VIEW(unit)` expands to `((GsCOORDUNIT *)(unit))`; base->entries
+(GPTR(unsigned char), model.h) passed as `unit` needs G2H, same hazard as
+ai_turn_action.c's DISPLAY_OBJECT_VIEW overrides (T1.4b, see their reason).
+Appears identically (byte-for-byte, no trailing `+ off`) 4 times in this
+file, always read into a real `GsCOORDUNIT *` local (scan/q/cur), never
+written back into a gaddr field -- `all = true`, one correct substitution
+regardless of position. The one occurrence with `+ off` (write into
+slot->coord, a gaddr field) is a different shape, its own override below.
+"""
+old = "GS_COORD_UNIT_VIEW(base->entries)"
+new = "GS_COORD_UNIT_VIEW((unsigned char *)G2H(base->entries))"
+
+[[override]]
+file = "game/func_8004CB0C.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+reason = "Same macro/field as the override just above (see its reason), but written into slot->coord (GPTR(struct _GsCOORDUNIT), libhmd.h) -- G2H the argument same as the read cases, then H2G the whole real-pointer result on its way into the field."
+old = "slot->coord = GS_COORD_UNIT_VIEW(base->entries + off);"
+new = "slot->coord = H2G(GS_COORD_UNIT_VIEW((unsigned char *)G2H(base->entries) + off));"
+
+[[override]]
+file = "game/func_800540B4.c"
+pattern = "guest-address-value-via-function-like-macro-argument"
+all = true
+reason = """
+`GS_COORD_UNIT_VIEW(e->field_00)` -- e is ModelSlotHeadEntry *, field_00 is
+`u32` (model.h), not itself GPTR-tagged: it holds a retail guest address
+directly, read as plain data rather than translated as a pointer field (the
+sibling field_04 right after it IS GPTR(void), see the override below).
+transform_c_expressions never sees this: its scanner only visits
+gaddr-TYPED fields, and field_00 is legitimately typed u32 -- indistinguishable
+from any other u32 field by type alone, so this is the same class ADR-05
+(3) describes for a literal constant, just the "constant" is a variable
+field instead. Caught only by compiling (-Werror=int-to-pointer-cast), not
+by the codemod's own checks. Appears identically 6 times (lines 296, 302,
+323, 331, 390, 417) -- `all = true`.
+"""
+old = "GS_COORD_UNIT_VIEW(e->field_00)"
+new = "GS_COORD_UNIT_VIEW(G2H(e->field_00))"
+
+[[override]]
+file = "game/func_800540B4.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+reason = """
+Same macro/field as func_8004CB0C.c's GS_COORD_UNIT_VIEW override above (see
+its reason) -- slot->entries here (ModelSlot, model.h, same GPTR(unsigned
+char) as before), 1 occurrence in this file.
+"""
+old = "GS_COORD_UNIT_VIEW(slot->entries)"
+new = "GS_COORD_UNIT_VIEW((unsigned char *)G2H(slot->entries))"
+
+[[override]]
+file = "game/func_800540B4.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+all = true
+reason = """
+`W(p, o)` (`#define W(p, o) (*(s32 *)((u8 *)(p) + (o)))`, this file) reads an
+s32 at byte offset `o` from `p`, treating `p` as a raw byte pointer --
+e->field_04 (GPTR(void), ModelSlotHeadEntry, model.h) passed as `p` needs
+G2H first, same hazard as the GS_COORD_UNIT_VIEW cases above, W just does
+its own cast afterward instead of GS_COORD_UNIT_VIEW's. The exact
+subexpression `W(e->field_04, 0) != -1 || W(e->field_04, 8) != 0` appears
+identically twice (lines 327, 392) -- `all = true`. list (u8 *, a real
+pointer already G2H'd when it was assigned from e->field_04/se->field_04 a
+few lines earlier in each case) is untouched: W(list, ...) elsewhere in
+this file needs no edit.
+"""
+old = "W(e->field_04, 0) != -1 || W(e->field_04, 8) != 0"
+new = "W(G2H(e->field_04), 0) != -1 || W(G2H(e->field_04), 8) != 0"
+
+[[override]]
+file = "game/func_8004CB0C.c"
+pattern = "nested-gaddr-edits"
+reason = """
+`base->entries = (u8 *)GsMapCoordUnit((u32 *)hmd, (u32 *)ev.ptr);`: the
+whole RHS needs H2G (base->entries is GPTR(unsigned char), model.h, and
+GsMapCoordUnit returns a real pointer), but its own argument ev.ptr is ALSO
+a gaddr field (GPTR(unsigned int) presumably ptr, nested two levels inside
+the write) needing its own G2H -- transform_c_expressions cannot compose
+two edits where one's replacement is built by copying the other's own span
+verbatim (see its "nested edits" check, added after this was found
+corrupting the file: `H2G(GsMapCoordUnit(...ev.ptr))ptr));`, mangled
+trailing text from the two edits splicing independently over each other).
+Fixed directly as literal text instead.
+"""
+old = "base->entries = (u8 *)GsMapCoordUnit((u32 *)hmd, (u32 *)ev.ptr);"
+new = "base->entries = H2G(GsMapCoordUnit((u32 *)hmd, (u32 *)G2H(ev.ptr)));"
+
+[[override]]
+file = "game/func_800482B0.c"
+pattern = "gaddr-field-array-subscript-base-collapsed-ast"
+reason = """
+`g_SDValue->field_043C[(u16)sound_id] == 0xFFFF`: field_043C (GPTR(unsigned
+short), sound.h) used directly as an array base, no `->` chain this time --
+transform_c_expressions never sees it at all: clang's error recovery
+collapses the whole `g_SDValue->field_043C[...] == 0xFFFF` condition into a
+single opaque UNEXPOSED_EXPR with no MEMBER_REF_EXPR child for field_043C
+inside it (confirmed by walking every cursor at this line -- none have that
+spelling), a step further than the usual degenerate-extent case (there, the
+node exists but has a zero-width span; here, the node is absent entirely).
+No general fix; fixed as literal text.
+"""
+old = "g_SDValue->field_043C[(u16)sound_id] == 0xFFFF"
+new = "((unsigned short *)G2H(g_SDValue->field_043C))[(u16)sound_id] == 0xFFFF"
+
+[[override]]
+file = "game/func_8004DC38.c"
+pattern = "gaddr-field-pointer-arithmetic-operand"
+reason = """
+field_DD8 (GPTR(s32), model.h -- "the base of 4-byte command records")
+used as a direct operand of `+`/`-` pointer arithmetic (not through a cast,
+var-decl or plain-assignment transform_c_expressions already handles --
+field_DD8's own immediate parent is the `+`/`-` operator itself, one level
+below where those checks look). Confirmed this needs a real pointer, not
+left as the gaddr integer, two ways: the header comment calls it a pointer
+base, and `x = q - p->field_DD8;`'s own compiler error (q, s32 *, minus a
+plain gaddr/uint32_t: ordinary integer subtraction assigned to s32 x --
+contradicts int-conversion, since it should be POINTER DIFFERENCE, an
+int-sized element count -- clang suggesting "dereference with *" is a red
+herring from the same type confusion) only makes sense if field_DD8 is
+genuinely a pointer here. Not generalized into transform_c_expressions:
+the same bare-operand shape could, in a different file, legitimately mean
+plain integer arithmetic on an already-correct uint32_t (ADR-05 (4)'s other
+case, AiScript_Jump's family in T1.4b/c) -- no safe syntactic rule
+distinguishes the two without risking a silently wrong value (pointer
+arithmetic where plain-integer was meant, or vice versa) in a case this
+batch has not actually seen, so each is reviewed and fixed individually.
+"""
+old = "lim = p->field_DD8 + e->ti;"
+new = "lim = (s32 *)G2H(p->field_DD8) + e->ti;"
+
+[[override]]
+file = "game/func_8004DC38.c"
+pattern = "gaddr-field-pointer-arithmetic-operand"
+reason = "Same field as the override just above (see its reason) -- q - field_DD8, a pointer difference."
+old = "x = q - p->field_DD8;"
+new = "x = q - (s32 *)G2H(p->field_DD8);"
+
+[[override]]
+file = "game/func_8004DC38.c"
+pattern = "gaddr-field-pointer-arithmetic-operand"
+reason = "Same field as the override above (see its reason) -- v - field_DD8, a pointer difference."
+old = "x = v - p->field_DD8;"
+new = "x = v - (s32 *)G2H(p->field_DD8);"
+
+[[override]]
+file = "game/func_8004CB0C.c"
+pattern = "gaddr-field-pointer-arithmetic-operand"
+reason = """
+Same pattern as func_8004DC38.c's field_DD8 overrides above (see their
+reason) -- slot->primtop (GPTR(unsigned long), libhmd.h-adjacent, same field
+already correctly cast-read a few tokens earlier on this same line via the
+`*slot->primtop` dereference case) used bare as a `+` operand here instead,
+one level below where the dereference/cast checks look.
+"""
+old = "*(slot->primtop + 2) != 0"
+new = "*((unsigned long *)G2H(slot->primtop) + 2) != 0"
+
+[[override]]
+file = "game/func_800540B4.c"
+pattern = "gaddr-field-array-element-chain"
+all = true
+reason = """
+`slot->field_1E0[k]->rewrite_idx`/`->aframe`: field_1E0 (ModelSlotPart
+*field_1E0[N], model.h -- an array of guest pointers) indexed, then the
+*element* used as the base of a further `->` access -- a combination
+transform_c_expressions's array-subscript and chained-access cases do not
+compose (the array case handles the whole x.f[i] being read/written
+directly; the chain case looks for `->` right after a plain field, not
+after a subscript). The common prefix `slot->field_1E0[k]` is what needs
+wrapping; what follows (->rewrite_idx vs ->aframe) is irrelevant to the fix,
+so `all = true` on that prefix covers both of this file's occurrences
+(adjacent lines, same k) correctly regardless of which trailing member
+follows.
+"""
+old = "slot->field_1E0[k]"
+new = "((ModelSlotPart *)G2H(slot->field_1E0[k]))"
