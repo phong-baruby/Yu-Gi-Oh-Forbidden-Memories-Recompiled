@@ -44,3 +44,146 @@ old = """                s32 result = func_8001EFD4(
 new = """                s32 result = func_8001EFD4(
                     DISPLAY_OBJECT_VIEW(G2H(source->ptr)),
                     DISPLAY_OBJECT_VIEW(G2H(entry->object)));"""
+
+[[override]]
+file = "game/func_80033DB0.c"
+pattern = "gaddr-field-chain-two-levels"
+all = true
+reason = """
+`&arg->tagp->org[z]` chains two gaddr fields (arg->tagp: GPTR(GsOT); GsOT.org:
+GPTR(GsOT_TAG)) -- transform_c_expressions only classifies a single field
+access at a time (ADR-05 (2)/(4)), not a `a->b->c` chain where b and c are
+both gaddr; clang's error recovery also collapses the broken `->org` access
+into a shape with no stable per-site anchor to classify from (same kind of
+degradation as the dereference and macro-argument cases this file's own
+docstring describes). Appears identically (byte-for-byte, `all = true`) 3
+times in this file and 4 more in func_80034830.c's own override below --
+genuinely the same call, not coincidentally similar text, so one correct
+substitution applies everywhere it occurs.
+"""
+old = "addPrim(&arg->tagp->org[z], out);"
+new = "addPrim(&((GsOT_TAG *)G2H(((GsOT *)G2H(arg->tagp))->org))[z], out);"
+
+[[override]]
+file = "game/func_80034830.c"
+pattern = "gaddr-field-chain-two-levels"
+all = true
+reason = "Same chain as func_80033DB0.c's override above (see its reason) -- identical call, this file's own 4 occurrences."
+old = "addPrim(&arg->tagp->org[z], out);"
+new = "addPrim(&((GsOT_TAG *)G2H(((GsOT *)G2H(arg->tagp))->org))[z], out);"
+
+[[override]]
+file = "game/func_8001B7AC.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+all = true
+reason = """
+Same hazard class as ai_turn_action.c's DISPLAY_OBJECT_VIEW overrides (see
+their reason): `DUEL_CARD_DISPLAY_OBJECT_VIEW(object)` expands to
+`((DuelCardDisplayObject *)(object))`; slot->object (GPTR(unsigned char), see
+duel_hand.h) passed as `object` needs G2H, but transform_c_expressions cannot
+place that edit (degenerate source extent). Appears identically 3 times on
+one line -- `all = true`, one correct substitution regardless of position.
+"""
+old = "DUEL_CARD_DISPLAY_OBJECT_VIEW(slot->object)"
+new = "DUEL_CARD_DISPLAY_OBJECT_VIEW(G2H(slot->object))"
+
+[[override]]
+file = "game/func_8001B7AC.c"
+pattern = "gaddr-field-as-array-subscript-base"
+reason = """
+`slot->object[(u32)&((DisplayObject *)0)->field_16]`: slot->object
+(GPTR(unsigned char), duel_hand.h -- already byte-granular, matching the
+offsetof-style byte index here) used directly as an array base, not through
+a cast or macro this time -- transform_c_expressions has no case for a gaddr
+field as an ARRAY_SUBSCRIPT_EXPR base (only the chained-field case above,
+which is unrelated) and the site has a degenerate source extent regardless
+(subscripting a non-pointer gaddr is itself a type error, same AST
+degradation class as the macro-argument case, not actually macro-related
+here -- see transform_c_expressions's "degenerate source extent" check).
+"""
+old = "slot->object[(u32)&((DisplayObject *)0)->field_16]"
+new = "((unsigned char *)G2H(slot->object))[(u32)&((DisplayObject *)0)->field_16]"
+
+[[override]]
+file = "game/func_80015DFC.c"
+pattern = "gaddr-field-chain-two-levels"
+reason = """
+`object->record->field_30...` chains object->record (GPTR(struct DisplayObject),
+display_projection.h) into a second field access -- same chained-field
+shape as func_80033DB0.c/func_80034830.c's tagp->org override above (see
+its reason for why transform_c_expressions does not handle this
+generically), one level simpler here (no array subscript after it).
+"""
+old = "u16 x = object->record->field_30.h.field_30;"
+new = "u16 x = ((struct DisplayObject *)G2H(object->record))->field_30.h.field_30;"
+
+[[override]]
+file = "game/func_80015DFC.c"
+pattern = "gaddr-field-chain-two-levels"
+reason = "Same chain as the override just above (see its reason) -- this file's second occurrence, through an explicit re-cast of object to a different struct type first."
+old = """            *(u16 *)&((volatile DisplayProjectionTrackedObject *)object)
+                        ->record->field_34.h.field_34;"""
+new = """            *(u16 *)&((struct DisplayObject *)G2H(((volatile DisplayProjectionTrackedObject *)object)
+                        ->record))->field_34.h.field_34;"""
+
+[[override]]
+file = "game/func_8002A3CC.c"
+pattern = "gaddr-field-chain-two-levels"
+reason = """
+`object->render->field_30...`/`field_32`: object->render (GPTR(struct
+DisplayObject), ygo_types.h's LibraryMotionState) chained into a second
+field access, same shape as func_80015DFC.c's override above. The two
+occurrences differ only in the trailing field name (field_30 vs field_32)
+so each still needs its own `old`/`new` pair below, not `all = true` on one
+shared pattern.
+"""
+old = "object->render->field_30.h.field_30 = object->x;"
+new = "((struct DisplayObject *)G2H(object->render))->field_30.h.field_30 = object->x;"
+
+[[override]]
+file = "game/func_8002A3CC.c"
+pattern = "gaddr-field-chain-two-levels"
+reason = "Same chain as the override just above (see its reason) -- this file's field_32 occurrence."
+old = "object->render->field_30.h.field_32 = object->y;"
+new = "((struct DisplayObject *)G2H(object->render))->field_30.h.field_32 = object->y;"
+
+[[override]]
+file = "game/func_800323F8.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = """
+`BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[N].scroll_box/cursor_box =
+DISPLAY_OBJECT_VIEW(object);`: the field is GPTR (now gaddr), the RHS macro
+expands to `(DisplayObject *)(object)` where `object` is a real host pointer
+(DisplayObject_AcquireSlot's return value a few lines up) -- needs H2G, same
+as classify_write handles for any other real-pointer write, but the RHS
+going through a macro degrades its own source extent the same way an LHS
+field read through one does (found as classify_write producing `= H2G();`,
+the macro call silently dropped, while reviewing a diff -- see its own
+"RHS ... has a degenerate source extent" check, added because of this).
+Fixed by dropping the now-pointless macro and H2G-wrapping the real pointer
+directly. 4 occurrences, each with distinct surrounding text (lists[0] vs
+[1], scroll_box vs cursor_box) so each gets its own entry, not `all = true`.
+"""
+old = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[0].scroll_box = DISPLAY_OBJECT_VIEW(object);"
+new = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[0].scroll_box = H2G(object);"
+
+[[override]]
+file = "game/func_800323F8.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = "Same as the override just above (see its reason) -- lists[1].scroll_box."
+old = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].scroll_box = DISPLAY_OBJECT_VIEW(object);"
+new = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].scroll_box = H2G(object);"
+
+[[override]]
+file = "game/func_800323F8.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = "Same as the override above (see its reason) -- lists[0].cursor_box."
+old = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[0].cursor_box = DISPLAY_OBJECT_VIEW(object);"
+new = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[0].cursor_box = H2G(object);"
+
+[[override]]
+file = "game/func_800323F8.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = "Same as the override above (see its reason) -- lists[1].cursor_box."
+old = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].cursor_box = DISPLAY_OBJECT_VIEW(object);"
+new = "    BUILD_DECK_TRANSITION_STATE_VIEW(state)->lists[1].cursor_box = H2G(object);"

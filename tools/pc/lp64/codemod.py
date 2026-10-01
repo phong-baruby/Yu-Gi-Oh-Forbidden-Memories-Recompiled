@@ -96,14 +96,14 @@ DEFAULT_GLOBS = ["*.h", "game/**/*.h", "overlays/**/*.h", "psyq/*.h"]  # relativ
 # ADR-05 (2)/(3) sites directly in source instead, #ifdef MEMORIES_LP64-
 # guarded (docs/macos/reports/m1-codemod-stage2a.md). Later T1.4 batches add
 # their own src/game/src/overlays patterns here.
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c"]
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c"]
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c"]
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c"]
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
@@ -443,13 +443,20 @@ def load_overrides(path):
 
 def apply_overrides(data, relpath, overrides):
     """`data` with every override whose `file` matches `relpath` applied, in
-    order. Each `old` must occur in `data` exactly once -- not found, or
-    upstream having changed the surrounding text so it now matches more than
-    once, both abort rather than silently applying the wrong instance or
-    skipping a fix this file still needs. Idempotent: `new` itself contains
-    `old` verbatim (its #else branch), so a second pass over already-
-    transformed output skips a match already inside a `new` it produced,
-    rather than wrapping it again."""
+    order. By default each `old` must occur in `data` exactly once -- not
+    found, or upstream having changed the surrounding text so it now matches
+    more than once, both abort rather than silently applying the wrong
+    instance or skipping a fix this file still needs. An override with
+    `all = true` instead requires at least one occurrence and replaces every
+    one -- only for a substitution that is correct regardless of which call
+    site it lands on (no file-specific context baked into `new`), the same
+    text repeated verbatim rather than one-off (T1.4c: addPrim(&arg->tagp->org[z], out)
+    appears identically seven times across two files). Idempotent either
+    way: `new` itself contains `old` verbatim (its #else branch, or -- for
+    `all` -- simply because `new` no longer contains the literal `old` text
+    once applied), so a second pass over already-transformed output skips a
+    match already inside a `new` it produced, rather than wrapping it
+    again."""
     for override in overrides:
         if override["file"] != relpath:
             continue
@@ -457,10 +464,16 @@ def apply_overrides(data, relpath, overrides):
         if new in data:
             continue  # already applied by an earlier pass; leave it alone
         count = data.count(old)
-        if count != 1:
-            sys.exit(f"error: override {relpath!r}/{override['pattern']!r}: "
-                     f"expected 1 occurrence of `old`, found {count}")
-        data = data.replace(old, new)
+        if override.get("all"):
+            if count < 1:
+                sys.exit(f"error: override {relpath!r}/{override['pattern']!r}: "
+                         f"expected at least 1 occurrence of `old`, found 0")
+            data = data.replace(old, new)
+        else:
+            if count != 1:
+                sys.exit(f"error: override {relpath!r}/{override['pattern']!r}: "
+                         f"expected 1 occurrence of `old`, found {count}")
+            data = data.replace(old, new)
     return data
 
 
@@ -472,6 +485,11 @@ TRANSLATE_CALLS = ("G2H", "H2G")
 
 
 def is_gaddr_type(t):
+    # An array field (GPTR(T) f[N] -> gaddr f[N]) reports its own type as
+    # the array (e.g. "gaddr[8]"), not "gaddr" -- check the element type
+    # instead so x.f[i] (array of guest pointers, T1.4c) is still found.
+    if t.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY):
+        t = t.get_array_element_type()
     return t.spelling == "gaddr" or t.get_canonical().spelling == "gaddr"
 
 
@@ -600,7 +618,7 @@ def field_pointee(field_cursor, header_cache):
     return m.group(2).strip(), m.group(1) is not None
 
 
-def classify_write(rhs, data):
+def classify_write(rhs, data, context):
     """Replacement (start, end, bytes) for the RHS of `x.f = rhs` (f gaddr),
     or None if no edit is needed. Three shapes, by rhs's own kind/type:
       - `(T *)expr` where expr is itself a pointer (a real pointer re-cast to
@@ -620,19 +638,32 @@ def classify_write(rhs, data):
       - gaddr already, or a plain integer with no cast at all -> both valid
         as-is (gaddr IS a uint32_t), no edit.
     Anything not matching one of these (checked by the caller) aborts rather
-    than guess."""
+    than guess. `context` is only for the degenerate-extent abort message
+    (see transform_c_expressions's own "degenerate source extent" check,
+    which this duplicates: a macro-wrapped RHS, e.g. `f = DISPLAY_OBJECT_VIEW(x)`,
+    degrades the same way an LHS field read through a macro does, but this
+    is the one place that check does not already run first -- found as a
+    real `f = H2G();` -- RHS silently dropped entirely -- while reviewing a
+    diff, T1.4c)."""
+    def degenerate_or_exit(node, label):
+        if node.extent.start.offset == node.extent.end.offset:
+            sys.exit(f"error: {context}: RHS ({label}) has a degenerate source extent "
+                     f"-- add a config/lp64/overrides.toml entry")
     if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR and rhs.type.kind == cindex.TypeKind.POINTER:
         # get_children() on a CSTYLE_CAST_EXPR gives the destination type's
         # own TYPE_REF first, then the operand -- the *last* child, not the
         # first, and itself possibly wrapped (unwrap_transparent) in the
         # same kind of implicit node described in unwrap_transparent's
         # docstring.
+        degenerate_or_exit(rhs, "cast")
         operand = unwrap_transparent(list(rhs.get_children())[-1])
+        degenerate_or_exit(operand, "cast operand")
         ostart, oend = operand.extent.start.offset, operand.extent.end.offset
         if operand.type.kind == cindex.TypeKind.POINTER:
             return (rhs.extent.start.offset, rhs.extent.end.offset, b"H2G(" + data[ostart:oend] + b")")
         return (rhs.extent.start.offset, rhs.extent.end.offset, data[ostart:oend])
     if rhs.type.kind == cindex.TypeKind.POINTER:
+        degenerate_or_exit(rhs, "pointer value")
         rstart, rend = rhs.extent.start.offset, rhs.extent.end.offset
         return (rstart, rend, b"H2G(" + data[rstart:rend] + b")")
     return None  # gaddr already, or a plain integer: both fine as-is
@@ -675,23 +706,63 @@ def transform_c_expressions(data, tu, filename):
         context = f"{filename}:{cursor.location.line}"
 
         if start == end:
-            # A gaddr field passed as a function-like macro's argument (e.g.
-            # `DISPLAY_OBJECT_VIEW(x.f)` expanding to `(T *)(x.f)`): libclang
-            # does not attribute a real file span to an AST node built from a
-            # macro argument used this way, so `extent` collapses to a
+            # clang's error recovery sometimes cannot attribute a real file
+            # span to this MEMBER_REF_EXPR at all -- `extent` collapses to a
             # zero-width point -- splicing at it would corrupt the file (an
-            # empty G2H() landing next to the untouched macro call, observed
-            # while building this). No general fix; add a
-            # config/lp64/overrides.toml entry for this exact call site.
-            sys.exit(f"error: {context}: {cursor.spelling!r} has a degenerate (macro-argument) "
-                     f"source extent -- add a config/lp64/overrides.toml entry")
+            # empty G2H() landing next to otherwise-untouched text, observed
+            # while building this, both from a gaddr field passed as a
+            # function-like macro's argument, e.g. `DISPLAY_OBJECT_VIEW(x.f)`
+            # expanding to `(T *)(x.f)` -- T1.4b -- and, T1.4c found, from a
+            # gaddr field used in a shape clang cannot type at all even
+            # without a macro, e.g. array-subscripting one directly
+            # (`x.f[i]`, valid once f is a real pointer, not before). No
+            # general fix for either; add a config/lp64/overrides.toml entry
+            # for this exact site.
+            sys.exit(f"error: {context}: {cursor.spelling!r} has a degenerate source extent "
+                     f"-- add a config/lp64/overrides.toml entry")
+
+        # *x.f (a direct dereference, no cast), checked ahead of everything
+        # below that routes on skip_transparent's `parent`: skip_transparent
+        # treats UNEXPOSED_EXPR as a transparent wrapper to see through, but
+        # when that UNEXPOSED_EXPR is itself standing in for a broken `*...`
+        # (wraps_dereference, see its docstring for why a proper
+        # UNARY_OPERATOR(*) cursor never shows up here), it is NOT
+        # transparent -- it is the dereference. Checking raw_parent (one hop,
+        # not skip_transparent's walk) here, first, stops a later branch
+        # (found: the plain-assignment-read one below, matching `val = ...`
+        # one level further up, past the dereference) from quietly deciding
+        # no edit is needed because that outer LHS (`val`) is not a pointer --
+        # wrong: the dereference itself always needs G2H regardless of what
+        # the whole expression is eventually assigned into.
+        raw_parent = parent_map.get(cursor.hash)
+        if raw_parent is not None and wraps_dereference(raw_parent, data):
+            pointee, is_fn = pointee_or_exit(ref, context)
+            cast = pointee if is_fn else f"{pointee} *"
+            edits.append((start, end, f"({cast})G2H(".encode() + data[start:end] + b")"))
+            continue
 
         if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
                 and is_assign_lhs(parent, cursor) and binop_operator(parent) == "=":
-            edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data)
+            edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data, context)
             if edit is not None:
                 edits.append(edit)
             continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
+                and binop_operator(parent) == "=" and not is_assign_lhs(parent, cursor):
+            # `realPtr = x.f;`: x.f read directly as the whole RHS of a plain
+            # assignment (not a declaration's initializer -- VAR_DECL's case
+            # above -- and not nested inside a cast/call/deref -- those cases
+            # above already matched if so, this one only fires when none of
+            # them did) into a real-pointer-typed LHS. Found missing (a real
+            # pointer-vs-gaddr -Wint-conversion error from the compiler, not
+            # silent -- this asymmetry is why guessing wrong the other way,
+            # adding H2G where not needed, is the safer default) while
+            # compile-verifying a batch this case had not come up in yet.
+            lhs = list(parent.get_children())[0]
+            if lhs.type.kind == cindex.TypeKind.POINTER:
+                edits.append((start, end, f"({lhs.type.spelling})G2H(".encode() + data[start:end] + b")"))
+            continue  # LHS not a pointer either: both sides already gaddr/int, no edit
 
         if parent is not None and parent.kind == cindex.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR \
                 and is_assign_lhs(parent, cursor):
@@ -714,14 +785,16 @@ def transform_c_expressions(data, tu, filename):
                 edits.append((start, end, f"({parent.type.spelling})G2H(".encode() + data[start:end] + b")"))
             continue  # declared as a non-pointer (e.g. `u32 x = f.field;`): already valid
 
-        # *x.f (a direct dereference, no cast): raw_parent, not skip_transparent's
-        # `parent` -- see wraps_dereference's docstring for why this never
-        # shows up as a clean UNARY_OPERATOR(*) cursor here.
-        raw_parent = parent_map.get(cursor.hash)
-        if raw_parent is not None and wraps_dereference(raw_parent, data):
-            pointee, is_fn = pointee_or_exit(ref, context)
-            cast = pointee if is_fn else f"{pointee} *"
-            edits.append((start, end, f"({cast})G2H(".encode() + data[start:end] + b")"))
+        if parent is not None and parent.kind == cindex.CursorKind.CALL_EXPR:
+            # `fn(x.f, ...)`: x.f passed by value as some argument (never the
+            # callee -- see the comment a few lines down for why a field
+            # called directly never reaches here). No cast needed even
+            # though a plain G2H(...) is only `void *`: that converts
+            # implicitly to whatever pointer type the parameter actually is
+            # (verified -- T1.4c found some of these callees have no visible
+            # prototype in scope at all, where this matters even more, since
+            # there is no parameter type to read back and match anyway).
+            edits.append((start, end, b"G2H(" + data[start:end] + b")"))
             continue
 
         if parent is not None and parent.kind == cindex.CursorKind.UNARY_OPERATOR:
@@ -741,9 +814,35 @@ def transform_c_expressions(data, tu, filename):
                 continue  # bare x.f++/--: pure guest-address arithmetic, no edit
             continue
 
+        if parent is not None and parent.kind == cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+            # x.f[i] where f is itself a gaddr *array* field (an array of
+            # guest pointers, e.g. GPTR(T) f[N]) -- not f being indexed by a
+            # gaddr value, the array element x.f[i] as a whole being written.
+            # Only the write shape has come up so far (T1.4c); a read here
+            # would need the same per-grandparent dispatch classify_write's
+            # callers already do for a plain field, so this intentionally
+            # does not try to handle one preemptively -- it falls through to
+            # the catch-all below and the compiler will say so if one shows
+            # up (a -Wint-conversion the other way, reading a gaddr as if it
+            # already were a pointer, which -- per this file's asymmetry
+            # note -- is the loud direction to find out, not a silent one).
+            grandparent = skip_transparent(parent, parent_map)
+            if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
+                    and binop_operator(grandparent) == "=" and is_assign_lhs(grandparent, parent):
+                edit = classify_write(unwrap_transparent(list(grandparent.get_children())[1]), data, context)
+                if edit is not None:
+                    edits.append(edit)
+            continue
+
         # Anything else (plain integer use: arithmetic operand, comparison,
-        # function argument typed as an integer, ...): gaddr already IS the
-        # right type here, no edit needed.
+        # ...): gaddr already IS the right type here, no edit needed. This
+        # includes a field called directly as a function (`x.f(args)`, ADR-05
+        # (6)) -- clang's error recovery collapses that whole shape down to
+        # the field's immediate parent being its enclosing statement, not a
+        # CALL_EXPR, so it already falls through to here on its own; left
+        # genuinely broken on purpose (fen's call, T1.4c) until GCALL exists
+        # (ADR-04, T1.6) -- see docs/macos/reports/m1-codemod-stage2c.md for
+        # the one site this applied to (func_80014294.c's phase_callback).
 
     out = data
     for start, end, replacement in sorted(edits, reverse=True):
