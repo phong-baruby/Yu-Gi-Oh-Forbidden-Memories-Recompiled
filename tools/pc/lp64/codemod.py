@@ -14,6 +14,15 @@ Reads from --in-dir (default src), writes the transformed copies under --out
 into --in-dir. Idempotent: transforming its own output again produces
 byte-identical text (see each case below for how it stays so).
 
+T1.4a adds a second, much narrower job: every *.c under CODE_GLOBS (today
+just src/psyq/*.c -- the forbidden-to-hand-edit *.c files ADR-05 (2)/(3)/(4)/
+(6) can still reach) gets config/lp64/overrides.toml's literal substitutions
+applied and is copied to --out, so its own relative #includes (e.g.
+"../types.h") resolve against the already-transformed tree rather than the
+original src/. No AST pass runs over these -- see CODE_GLOBS's own comment
+and docs/macos/reports/m1-codemod-stage2a.md for why this batch did not need
+one.
+
 Four field shapes, four strategies:
   1. Pointer/array-of-pointer declared directly (`T *f`, `T *f[N]`) -> GPTR.
      Re-parsing GPTR(T) without -DMEMORIES_LP64 expands it back to `T *`,
@@ -50,12 +59,24 @@ second (text-splicing runs back-to-front) slices into text the first edit
 already rewrote, corrupting both. Consecutive fields sharing one extent
 start are therefore grouped and edited as a unit (group_replacement below),
 never one declarator at a time."""
-import argparse, glob, os, subprocess, sys
+import argparse, glob, os, subprocess, sys, tomllib
 import clang.cindex as cindex
 
 INLINE_FN_PTR_MARKER = b"/* lp64: inline fn ptr */"
 
 DEFAULT_GLOBS = ["*.h", "game/**/*.h", "overlays/**/*.h", "psyq/*.h"]  # relative to --in-dir
+
+# T1.4a: just the one *.c under src/psyq (the only directory in the
+# hand-edit-forbidden list -- CLAUDE.md -- that has one); its expression-level
+# fixes can only reach it through this codemod, via config/lp64/overrides.toml
+# (see apply_overrides). src/pc/sdk's *.c files are NOT listed here: they are
+# outside the forbidden list, so T1.4a fixed their handful of real ADR-05
+# (2)/(3) sites directly in source, #ifdef MEMORIES_LP64-guarded (see
+# docs/macos/reports/m1-codemod-stage2a.md) -- a generic AST-driven .c
+# expression pass was not worth building for the ~9 sites the whole batch
+# had. Later T1.4 batches touching src/game/src/overlays *.c (forbidden to
+# hand-edit) will likely need to extend this list and this function.
+CODE_GLOBS = ["psyq/*.c"]
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
@@ -306,6 +327,51 @@ def transform_bytes(data, tu, filename):
     return out, len(edits)
 
 
+def load_overrides(path):
+    """config/lp64/overrides.toml's [[override]] entries, or [] if the file
+    does not exist (so the tool stays usable before any override is needed)."""
+    if not os.path.exists(path):
+        return []
+    with open(path, "rb") as handle:
+        return tomllib.load(handle)["override"]
+
+
+def apply_overrides(data, relpath, overrides):
+    """`data` with every override whose `file` matches `relpath` applied, in
+    order. Each `old` must occur in `data` exactly once -- not found, or
+    upstream having changed the surrounding text so it now matches more than
+    once, both abort rather than silently applying the wrong instance or
+    skipping a fix this file still needs. Idempotent: `new` itself contains
+    `old` verbatim (its #else branch), so a second pass over already-
+    transformed output skips a match already inside a `new` it produced,
+    rather than wrapping it again."""
+    for override in overrides:
+        if override["file"] != relpath:
+            continue
+        old, new = override["old"].encode("utf-8"), override["new"].encode("utf-8")
+        if new in data:
+            continue  # already applied by an earlier pass; leave it alone
+        count = data.count(old)
+        if count != 1:
+            sys.exit(f"error: override {relpath!r}/{override['pattern']!r}: "
+                     f"expected 1 occurrence of `old`, found {count}")
+        data = data.replace(old, new)
+    return data
+
+
+def transform_code_file(path, out_path, relpath, overrides):
+    """A *.c file's codemod output: config/lp64/overrides.toml's literal
+    substitutions only (see CODE_GLOBS's comment for why this batch needs
+    nothing more -- no struct/union defined in scope needs ADR-05 (1)/(8),
+    and no GPTR-typed expression needing (2)/(3)/(4)/(6) was found in it)."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    data = apply_overrides(data, relpath, overrides)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "wb") as handle:
+        handle.write(data)
+
+
 def transform_file(path, out_path, include_dir):
     with open(path, "rb") as handle:
         data = handle.read()
@@ -324,18 +390,26 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--in-dir", default="src", help="source tree to read from")
     parser.add_argument("--out", default="tmp/lp64/src", help="output tree to write to")
+    parser.add_argument("--overrides", default="config/lp64/overrides.toml",
+                        help="ADR-05 override file (literal substitutions for *.c, see CODE_GLOBS)")
     parser.add_argument("headers", nargs="*",
                         help="headers under --in-dir to transform (default: every header "
-                             "under src/*.h, src/game, src/overlays, src/psyq)")
+                             "under src/*.h, src/game, src/overlays, src/psyq, plus every "
+                             "*.c under CODE_GLOBS)")
     options = parser.parse_args()
     setup_libclang()
 
     if options.headers:
-        relative = options.headers
+        relative, code_relative = options.headers, []
     else:
         relative = sorted(
             os.path.relpath(path, options.in_dir)
             for pattern in DEFAULT_GLOBS
+            for path in glob.glob(os.path.join(options.in_dir, pattern), recursive=True)
+        )
+        code_relative = sorted(
+            os.path.relpath(path, options.in_dir)
+            for pattern in CODE_GLOBS
             for path in glob.glob(os.path.join(options.in_dir, pattern), recursive=True)
         )
 
@@ -351,6 +425,16 @@ def main():
         total_fields += count
     print(f"{len(relative)} header(s) processed, {total_fields} field(s) transformed "
           f"across {total_files} header(s)")
+
+    if code_relative:
+        overrides = load_overrides(options.overrides)
+        for relpath in code_relative:
+            src = os.path.join(options.in_dir, relpath)
+            dst = os.path.join(options.out, relpath)
+            if not os.path.exists(src):
+                sys.exit(f"{src}: not found")
+            transform_code_file(src, dst, relpath, overrides)
+        print(f"{len(code_relative)} *.c file(s) processed (overrides only)")
 
 
 if __name__ == "__main__":

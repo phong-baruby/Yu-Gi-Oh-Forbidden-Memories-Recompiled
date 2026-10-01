@@ -1,5 +1,6 @@
 /* LIBGTE register setup over the software coprocessor. */
 #include "pc/compat/gte.h"
+#include "pc/guest/gptr.h"
 
 void InitGeom(void)
 {
@@ -102,8 +103,8 @@ void PopMatrix(void)
 /* The library's own tables, read from the resident image so every value is
  * the retail one: a quarter wave of sin (0..0x400) for rsin/rcos, and 4096
  * {sin, cos} pairs for the matrix builders. */
-#define SIN_QUARTER ((const int16_t *)0x80094938u)
-#define SIN_COS ((const int16_t *)0x80095638u)
+#define SIN_QUARTER ((const int16_t *)G2H(0x80094938u))
+#define SIN_COS ((const int16_t *)G2H(0x80095638u))
 
 static int sin_1(int angle)
 {
@@ -248,7 +249,7 @@ Matrix *RotMatrixYXZ_gte(ShortVector *r, Matrix *m)
  * divided by the larger, pre-shifting whichever keeps the quotient in range. */
 long ratan2(long y, long x)
 {
-    const int16_t *table = (const int16_t *)0x80099638u;
+    const int16_t *table = (const int16_t *)G2H(0x80099638u);
     int negative_x = x < 0, negative_y = y < 0;
     int32_t ax = negative_x ? -(int32_t)x : (int32_t)x, ay = negative_y ? -(int32_t)y : (int32_t)y, angle;
     if (!ax && !ay) {
@@ -349,7 +350,7 @@ Matrix *TransposeMatrix(Matrix *m0, Matrix *m1)
  * 0x800951A8), normalized with the GTE's leading-zero counter. */
 long SquareRoot0(long value)
 {
-    const int16_t *table = (const int16_t *)0x800951a8u;
+    const int16_t *table = (const int16_t *)G2H(0x800951a8u);
     int zeros, even, shift;
     int32_t index;
     Memories_GteWriteData(30, (uint32_t)value);
@@ -603,20 +604,57 @@ typedef struct DivideVertex {
 
 typedef struct DivideLevel {
     DivideVertex r01, r02, r31, r32, centre;
+#ifdef MEMORIES_LP64
+    /* Real pointers here would make this file's local mirror of libgte.h's
+     * DIVPOLYGON4/CRVECTOR4 (already compacted to 4-byte guest addresses by
+     * the LP64 struct codemod, T1.3) grow past the fixed-size scratchpad
+     * budget the retail game lays it out in: src/game/display_object_helpers.c
+     * pins DIVPOLYGON4 at the PS1 scratchpad (0x1F800000), sized to match
+     * retail's 32-bit layout exactly (see docs/macos/reports/m1-codemod-stage2a.md).
+     * corner[] only ever points within this same DividePolygon4 buffer, so a
+     * byte offset from its start is enough -- see corner_get/corner_set. */
+    uint32_t corner[4];
+    uint32_t unused_return;
+#else
     DivideVertex *corner[4];
     uint32_t *unused_return;
+#endif
 } DivideLevel;
 
 typedef struct DividePolygon4 {
     uint32_t ndiv, pih, piv;
     uint16_t clut, tpage;
     uint32_t rgbc;
-    uint32_t *ot;
+    GPTR(unsigned int) ot; /* guest ordering-table cursor; see docs/macos/reports/m1-codemod-stage2a.md */
     DivideVertex r[4];
     DivideLevel level[5];
 } DividePolygon4;
 
 _Static_assert(sizeof(DivideVertex) == 0x18 && sizeof(DivideLevel) == 0x8c, "DIVPOLYGON4 layout");
+
+#ifdef MEMORIES_LP64
+static DivideVertex *corner_get(DividePolygon4 *work, DivideLevel *level, int i)
+{
+    return (DivideVertex *)((char *)work + level->corner[i]);
+}
+
+static void corner_set(DividePolygon4 *work, DivideLevel *level, int i, const DivideVertex *vertex)
+{
+    level->corner[i] = (uint32_t)((const char *)vertex - (const char *)work);
+}
+#else
+static DivideVertex *corner_get(DividePolygon4 *work, DivideLevel *level, int i)
+{
+    (void)work;
+    return level->corner[i];
+}
+
+static void corner_set(DividePolygon4 *work, DivideLevel *level, int i, const DivideVertex *vertex)
+{
+    (void)work;
+    level->corner[i] = (DivideVertex *)vertex;
+}
+#endif
 
 static uint32_t *emit_ft4(uint32_t *packet, DividePolygon4 *work, const DivideVertex *a, const DivideVertex *b,
                           const DivideVertex *c, const DivideVertex *d)
@@ -629,8 +667,8 @@ static uint32_t *emit_ft4(uint32_t *packet, DividePolygon4 *work, const DivideVe
         packet[3 + i * 2] = i == 0 ? uv | ((uint32_t)work->clut << 16) : i == 1 ? uv | ((uint32_t)work->tpage << 16) : uv;
     }
     packet[1] = work->rgbc;
-    packet[0] = *work->ot | 0x09000000u;
-    *work->ot = (uint32_t)(uintptr_t)packet & 0x00ffffffu;
+    packet[0] = *(unsigned int *)G2H(work->ot) | 0x09000000u;
+    *(unsigned int *)G2H(work->ot) = (uint32_t)(uintptr_t)packet & 0x00ffffffu;
     return packet + 10;
 }
 
@@ -646,7 +684,8 @@ static void store_screen(DivideVertex *vertex, unsigned sxy, unsigned sz)
 
 static uint32_t *divide_ft4(uint32_t *packet, DividePolygon4 *work, uint32_t depth, DivideLevel *level)
 {
-    DivideVertex **r = level->corner;
+    DivideVertex *r[4] = {corner_get(work, level, 0), corner_get(work, level, 1),
+                          corner_get(work, level, 2), corner_get(work, level, 3)};
     int32_t near_limit = (int32_t)Memories_GteReadControl(26) >> 1;
     int32_t centre_x = (int32_t)Memories_GteReadControl(24) >> 16, centre_y = (int32_t)Memories_GteReadControl(25) >> 16;
     int32_t half_w = (int32_t)(work->pih >> 1), half_h = (int32_t)(work->piv >> 1);
@@ -712,10 +751,10 @@ static uint32_t *divide_ft4(uint32_t *packet, DividePolygon4 *work, uint32_t dep
         store_screen(&level->r31, 12, 17);
         store_screen(&level->r32, 13, 18);
         for (i = 0; i < 4; i++) {
-            next->corner[0] = r[i];
-            next->corner[1] = quarters[i][0];
-            next->corner[2] = quarters[i][1];
-            next->corner[3] = &level->centre;
+            corner_set(work, next, 0, r[i]);
+            corner_set(work, next, 1, quarters[i][0]);
+            corner_set(work, next, 2, quarters[i][1]);
+            corner_set(work, next, 3, &level->centre);
             packet = divide_ft4(packet, work, depth, next);
         }
     }
@@ -731,7 +770,7 @@ uint32_t *DivideFT4(ShortVector *v0, ShortVector *v1, ShortVector *v2, ShortVect
     long sxy[4], p, otz, flag;
     int i;
     for (i = 0; i < 4; i++) {
-        work->level[0].corner[i] = &work->r[i];
+        corner_set(work, &work->level[0], i, &work->r[i]);
         work->r[i].v = *corners[i];
     }
     if (RotAverageNclip4(&work->r[0].v, &work->r[1].v, &work->r[2].v, &work->r[3].v, &sxy[0], &sxy[1], &sxy[2],
@@ -746,7 +785,7 @@ uint32_t *DivideFT4(ShortVector *v0, ShortVector *v1, ShortVector *v2, ShortVect
         work->r[i].uv[1] = (uint8_t)(*texture[i] >> 8);
         work->r[i].pad = (uint16_t)(*texture[i] >> 16);
     }
-    work->ot = ot;
+    work->ot = H2G(ot);
     work->rgbc = *rgbc;
     work->clut = (uint16_t)(*uv0 >> 16);
     work->tpage = (uint16_t)(*uv1 >> 16);

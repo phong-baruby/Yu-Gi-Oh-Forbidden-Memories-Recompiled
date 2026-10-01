@@ -55,6 +55,8 @@ Các biến đổi chính:
 7. (M5) Định nghĩa hàm game `foo` → `foo__impl` cộng với stub dispatch (ADR-06).
 8. Field khai báo kiểu `long`/`unsigned long` trần (không qua typedef) → `s32`/`u32` (phát hiện ở T1.3, xem `docs/macos/reports/m1-codemod-stage1.md`): `long` 4 byte trên i386 nhưng 8 byte trên mọi ABI C 64-bit gốc kể cả arm64 macOS — không liên quan con trỏ, nhưng cùng layout check T1.3 bắt được nên gộp cùng codemod này thay vì tách task riêng. 30 struct trong PSY-Q SDK header bị ảnh hưởng (156 field).
 
+**Cách áp dụng (2)/(3)/(4)/(6) cho file `.c` (T1.4, bắt đầu từ T1.4a):** file `.c` không nằm trong danh sách cấm sửa tay (luật 1, CLAUDE.md) — ví dụ `src/pc/sdk/*.c` — được sửa tay trực tiếp, bọc `#ifdef MEMORIES_LP64` (nhánh còn lại giữ nguyên 100%, vì `G2H`/`H2G`/`GPTR` đã là no-op/cast thường ở nhánh không-LP64). File `.c` nằm trong danh sách cấm — chỉ có `src/psyq/*.c` hiện tại — đi qua `codemod.py`'s `CODE_GLOBS` (được copy nguyên trạng vào `tmp/lp64/src` để include tương đối trỏ đúng cây đã biến đổi) cộng `config/lp64/overrides.toml` (thay chuỗi literal, khớp đúng 1 lần). Không có bộ biến đổi AST tổng quát cho biểu thức trong `.c` — quy mô đo được ở T1.4a (9 điểm/13 file) không đủ lớn để biện minh cho việc đó; xem `docs/macos/reports/m1-codemod-stage2a.md`.
+
 ## ADR-06 — Hook mod bằng dispatch stub — Accepted
 Apple Silicon áp W^X cho `__TEXT`, nên cách patch `jmp *slot` vào NOP (`src/pc/mods/hooks.c`, `-fpatchable-function-entry`) không dùng được. Thay vào đó, mỗi hàm game hook được có một stub assembly sinh tự động:
 ```asm

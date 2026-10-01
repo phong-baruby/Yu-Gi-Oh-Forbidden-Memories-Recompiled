@@ -1,0 +1,31 @@
+# LP64 codemod overrides (ADR-05): places the codemod cannot derive a
+# transformation for automatically. Each [[override]] is a literal,
+# byte-exact substring replacement applied to one file before any other
+# codemod transform, matched by `file` (path relative to --in-dir) + `old`
+# (must appear in that file exactly once -- codemod.py aborts otherwise, so a
+# future upstream sync that changes or removes the matched text is caught
+# rather than silently skipped) and `pattern`, describing what kind of thing
+# this is, for grep-ability.
+
+[[override]]
+file = "psyq/startup_data.c"
+pattern = "mach-o-section-attribute"
+reason = """
+ELF/PE accept a bare `__attribute__((section(".data")))`; Mach-O requires a
+"SEGMENT,section" pair (clang: "mach-o section specifier requires a segment
+and section separated by a comma"). Same hazard class already known from
+T0.4/T1.3 (src/game/display_object_helpers.h, src/game/mem_card_work.h) --
+pointer/long width unrelated, just an object-format difference, so it does
+not fit any of the AST-driven transforms and is listed here instead. Fixed
+here rather than deferred like the other two because it directly blocks this
+file -- one of T1.4a's own batch -- from compiling at all under LP64.
+"""
+old = """u32 D_800906E0 __attribute__((section(".data"))) = 0;
+u32 D_800906E4 __attribute__((section(".data"))) = 0;"""
+new = """#if defined(__APPLE__)
+u32 D_800906E0 __attribute__((section("__DATA,.data"))) = 0;
+u32 D_800906E4 __attribute__((section("__DATA,.data"))) = 0;
+#else
+u32 D_800906E0 __attribute__((section(".data"))) = 0;
+u32 D_800906E4 __attribute__((section(".data"))) = 0;
+#endif"""

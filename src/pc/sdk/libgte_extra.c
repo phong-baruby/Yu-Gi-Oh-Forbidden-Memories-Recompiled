@@ -8,6 +8,7 @@
 #include "psyq/libgpu.h"
 #include "psyq/libgs.h"
 #include "pc/compat/gte.h"
+#include "pc/guest/gptr.h"
 #include <stdint.h>
 
 /* The game's structures have GCC's bitfield layout; MinGW's default (MSVC's)
@@ -44,7 +45,7 @@ void SetShadeTex(void *p, int tge)
 /* --- LIBGTE --------------------------------------------------------- */
 
 /* 4096 {sin, cos} pairs, the library's own table in the resident image. */
-#define SIN_COS ((const int16_t *)0x80095638u)
+#define SIN_COS ((const int16_t *)G2H(0x80095638u))
 
 static void sin_cos(long angle, int *sine, int *cosine)
 {
@@ -236,7 +237,7 @@ void gteMIMefunc(SVECTOR *otp, SVECTOR *dfp, long n, long p)
  * CORDIC steps over the library's angle table at 0x80095168. */
 int catan(int a)
 {
-    const int32_t *table = (const int32_t *)0x80095168u;
+    const int32_t *table = (const int32_t *)G2H(0x80095168u);
     int32_t x = 4096, y = a, z = 0;
     int i;
     for (i = 0; i < 12; i++) {
@@ -270,7 +271,7 @@ static void get_lw(GsCOORDINATE2 *coordinate, MATRIX *m)
     s32 depth = 0, manual = 100;
     for (;;) {
         D_800FE278[depth] = (u32)(uintptr_t)coordinate;
-        if (!coordinate->super) {
+        if (!G2H(coordinate->super)) {
             if (coordinate->flg == (u32)D_800FE0C8 || coordinate->flg == 0) {
                 coordinate->workm = coordinate->coord;
                 *m = coordinate->workm;
@@ -291,7 +292,7 @@ static void get_lw(GsCOORDINATE2 *coordinate, MATRIX *m)
         if (coordinate->flg == 0) {
             manual = depth;
         }
-        coordinate = coordinate->super;
+        coordinate = G2H(coordinate->super);
         depth++;
     }
     while (depth > 0) {
