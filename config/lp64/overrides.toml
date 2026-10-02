@@ -91,7 +91,7 @@ new = "DUEL_CARD_DISPLAY_OBJECT_VIEW(G2H(slot->object))"
 file = "game/func_8001B7AC.c"
 pattern = "gaddr-field-as-array-subscript-base"
 reason = """
-`slot->object[(u32)&((DisplayObject *)0)->field_16]`: slot->object
+`slot->object[(u32)(uintptr_t)&((DisplayObject *)0)->field_16]`: slot->object
 (GPTR(unsigned char), duel_hand.h -- already byte-granular, matching the
 offsetof-style byte index here) used directly as an array base, not through
 a cast or macro this time -- transform_c_expressions has no case for a gaddr
@@ -101,8 +101,8 @@ which is unrelated) and the site has a degenerate source extent regardless
 degradation class as the macro-argument case, not actually macro-related
 here -- see transform_c_expressions's "degenerate source extent" check).
 """
-old = "slot->object[(u32)&((DisplayObject *)0)->field_16]"
-new = "((unsigned char *)G2H(slot->object))[(u32)&((DisplayObject *)0)->field_16]"
+old = "slot->object[(u32)(uintptr_t)&((DisplayObject *)0)->field_16]"
+new = "((unsigned char *)G2H(slot->object))[(u32)(uintptr_t)&((DisplayObject *)0)->field_16]"
 
 [[override]]
 file = "game/func_80015DFC.c"

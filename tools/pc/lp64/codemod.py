@@ -432,6 +432,39 @@ def fix_mach_o_sections(data):
     return MACH_O_SECTION_RE.sub(rb'__attribute__((MEMORIES_SECTION("\1")))', data)
 
 
+# (TYPE)&(((T *)0)->member), (TYPE)&((T *)0)->member, (TYPE)&((T *)0)[i],
+# (TYPE)&((T (*)[N])0)[i] -- a hand-rolled offsetof via null-pointer member
+# or element access. The lookahead's tail (`)` then `0` then `)`) requires
+# the cast-to-pointer be applied to the literal 0, which is what makes this
+# safe: the resulting address is always a small in-struct/in-array offset,
+# known at compile time, never a real 64-bit host address -- unlike a bare
+# `(u32)&real_object` (see startup_data.c's D_800906E8 table, ADR-03/T1.5,
+# deliberately NOT matched here since its base isn't 0).
+OFFSETOF_CAST_RE = re.compile(
+    rb'\(u32\)&(?=\([A-Za-z0-9_ ,\[\]\*\(\)]{0,120}?\)\s*0\))'
+)
+
+
+def fix_offsetof_casts(data):
+    """(u32)&(((T *)0)->member) -> (u32)(uintptr_t)&(((T *)0)->member),
+    project-wide, every file this codemod writes (headers and *.c alike) --
+    a new ADR-05 case (see ARCHITECTURE.md item 9), found while measuring
+    T1.4e: used throughout for layout static asserts (X_offset_must_be_...),
+    the YGO_TYPE_OFFSET/MAIN_MENU_STATE_OFFSET macros, and real runtime
+    pointer arithmetic (e.g. util_memory.c, model_slot_row_tables.c) --
+    207 occurrences/85 files when measured, 21 of them in *.c files already
+    shipped in T1.4b/c/d without this fix (re-verified clean after it).
+    Routing through (uintptr_t) first (ptr -> same-width int, allowed) before
+    the lossless-by-construction narrowing to u32 (plain int narrowing, not
+    -Wpointer-to-int-cast) produces the exact same bits as the bare cast on
+    every ABI, LP64 or not -- see docs/macos/reports/m1-codemod-stage2e.md.
+    [A-Za-z0-9_ ,\\[\\]*()]{0,120}? deliberately allows nested parens/brackets
+    (the T (*)[N] function/array-pointer declarator shape) in the type
+    between `&` and the literal `0`, bounded so it can't run away across an
+    unrelated later `)0)` possibly present elsewhere on the same line."""
+    return OFFSETOF_CAST_RE.sub(rb'(u32)(uintptr_t)&', data)
+
+
 def load_overrides(path):
     """config/lp64/overrides.toml's [[override]] entries, or [] if the file
     does not exist (so the tool stays usable before any override is needed)."""
@@ -930,6 +963,7 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
     with open(path, "rb") as handle:
         data = handle.read()
     data = fix_mach_o_sections(data)
+    data = fix_offsetof_casts(data)
     data = apply_overrides(data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:
@@ -953,6 +987,7 @@ def transform_file(path, out_path, include_dir, relpath, overrides):
         sys.exit(f"{path}: could not parse (even with the psyq prelude)")
     out_data, count = transform_bytes(data, tu, os.path.basename(path))
     out_data = fix_mach_o_sections(out_data)
+    out_data = fix_offsetof_casts(out_data)
     out_data = apply_overrides(out_data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:
