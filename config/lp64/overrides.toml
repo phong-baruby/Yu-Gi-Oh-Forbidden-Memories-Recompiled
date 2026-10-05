@@ -499,3 +499,203 @@ same source idiom, different target type, different correct answer).
 """
 old = "return object->base + ((data[1] << 8) | data[0]);"
 new = "return (u8 *)G2H(object->base) + ((data[1] << 8) | data[0]);"
+
+[[override]]
+file = "game/duel_field_effect_steps.c"
+pattern = "gaddr-field-via-function-like-macro-argument-duel-field-effect"
+reason = """
+Same hazard/macro-argument-extent class as T1.4f's duel_card_effects.c
+override of the same one-arg view macro (DUEL_FIELD_EFFECT_OBJECT_VIEW) --
+transform_c_expressions cannot place an edit inside a function-like macro
+argument (degenerate source extent). entry->object: duel_field_effect_steps.c:56.
+"""
+old = "DUEL_FIELD_EFFECT_OBJECT_VIEW(entry->object)"
+new = "DUEL_FIELD_EFFECT_OBJECT_VIEW(G2H(entry->object))"
+
+[[override]]
+file = "game/duel_phase_entry.c"
+pattern = "gaddr-field-via-function-like-macro-argument-duel-card"
+all = true
+reason = """
+Same hazard/macro-argument-extent class as func_8001B7AC.c's
+DUEL_CARD_DISPLAY_OBJECT_VIEW override (T1.4d). rec->object: appears
+identically 3 times in this file (duel_phase_entry.c:69,82,306) --
+`all = true`, one correct substitution regardless of position.
+"""
+old = "DUEL_CARD_DISPLAY_OBJECT_VIEW(rec->object)"
+new = "DUEL_CARD_DISPLAY_OBJECT_VIEW(G2H(rec->object))"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = """
+Same class as func_800323F8.c's override (see its reason): `side->cursor_object
+= DISPLAY_OBJECT_VIEW(obj);` -- field is gaddr, RHS macro expands to
+`(DisplayObject *)(obj)` where obj is a real host pointer
+(HAND_CARD_OBJECT_VIEW(DisplayObject_AcquireSlot(...)) a few lines up), but
+the macro-wrapped RHS degrades classify_write's own extent the same way.
+Fixed identically: drop the now-pointless macro, H2G-wrap the real pointer
+directly. duel_scene_hand_actions.c:139.
+"""
+old = "        side->cursor_object = DISPLAY_OBJECT_VIEW(obj);"
+new = "        side->cursor_object = H2G(obj);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-via-function-like-macro-argument-hand"
+all = true
+reason = """
+Same hazard class as func_8001B7AC.c's DUEL_CARD_DISPLAY_OBJECT_VIEW override
+(see its reason): HAND_CARD_OBJECT_VIEW(hand->object) expands to a cast of
+hand->object (GPTR, DuelHandSlot), needs G2H, but transform_c_expressions
+cannot place the edit (degenerate source extent, macro argument). Substring
+(not the whole statement -- this file reuses it both as a bare assignment
+`obj = HAND_CARD_OBJECT_VIEW(hand->object);` at :228,402 and immediately
+chained, e.g. `HAND_CARD_OBJECT_VIEW(hand->object)->pos.xy.y += 4;` at
+:368,576,583 -- the macro-argument fix is identical regardless) appears
+identically 5 times: duel_scene_hand_actions.c:228,368,402,576,583 --
+`all = true`, one correct substitution regardless of position.
+"""
+old = "HAND_CARD_OBJECT_VIEW(hand->object)"
+new = "HAND_CARD_OBJECT_VIEW(G2H(hand->object))"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-via-function-like-macro-argument-slot-array"
+reason = """
+Same hazard/macro-argument class as the HAND_CARD_OBJECT_VIEW(hand->object)
+override above, a different base expression this time: D_800EA030[n].object
+(GPTR, DuelHandSlot, indexed directly rather than through a `hand`/`slot`
+pointer). duel_scene_hand_actions.c:324.
+"""
+old = "HAND_CARD_OBJECT_VIEW(D_800EA030[n].object)"
+new = "HAND_CARD_OBJECT_VIEW(G2H(D_800EA030[n].object))"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-via-function-like-macro-argument-card"
+reason = """
+Same hazard/macro-argument class as the HAND_CARD_OBJECT_VIEW(hand->object)
+override above, a different base variable this time (card, a DuelCardRecord *
+indexing D_801A7AD8, not a DuelHandSlot *). duel_scene_hand_actions.c:569.
+"""
+old = "HAND_CARD_OBJECT_VIEW(card->object)"
+new = "HAND_CARD_OBJECT_VIEW(G2H(card->object))"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-via-function-like-macro-argument-slot-ptr"
+reason = """
+Same hazard/macro-argument class as the overrides above, DISPLAY_OBJECT_VIEW
+this time (not HAND_CARD_OBJECT_VIEW) on a DuelHandSlot * named slot (walking
+D_800EA030 via a `for (;;)` loop, distinct variable from the `hand`/`card`
+cases above but the same gaddr field). duel_scene_hand_actions.c:600.
+"""
+old = "DISPLAY_OBJECT_VIEW(slot->object)"
+new = "DISPLAY_OBJECT_VIEW(G2H(slot->object))"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-field-via-function-like-macro-argument-hand-child"
+reason = """
+Same hazard/macro-argument class as the overrides above, hand->child
+(DuelHandSlot's other gaddr field, the sprite func_8001B7AC stacks over the
+hand card object -- see duel_hand.h's doc comment) instead of hand->object.
+duel_scene_hand_actions.c:377.
+"""
+old = "HAND_CARD_OBJECT_VIEW(hand->child)"
+new = "HAND_CARD_OBJECT_VIEW(G2H(hand->child))"
+
+[[override]]
+file = "game/duel_effect_command.c"
+pattern = "gaddr-field-array-element-deref-postinc"
+reason = """
+`t = *TEXT_STREAM_OWNER(object)->streams[object->stream_58]++;`
+(duel_effect_command.c:215): streams (GPTR(u8) streams[22], TextStreamOwner,
+ygo_types.h) indexed then immediately dereferenced with `*` around a postfix
+`++` -- a shape transform_c_expressions has no case for (every other
+`...streams[object->stream_58]` site in this file either takes its address,
+`&...`, or is a plain gaddr-to-gaddr assignment at :278, both fine as-is; this
+is the only site that dereferences the element itself) -- silently left
+untouched by the codemod (no sys.exit; only caught by the actual compile, not
+by the codemod's own classifier, which only inspects assignment RHS and a
+handful of recognized parent shapes -- worth noting as a gap, same class as
+the `transform_c_expressions` gaps found during T1.4b/c). `object` here is
+TEXT_STREAM_OWNER(object)'s *argument*, a real host pointer (the function's
+own `DuelEffectChannel *object` parameter, not a gaddr field) -- only the
+array element itself (the postfix target) needs G2H, nothing about the macro
+argument. Fix keeps the postfix `++` on the gaddr storage cell itself (same
+byte-count effect as the original `u8 *` postfix increment) and G2H's only
+the dereferenced (pre-increment) value.
+"""
+old = "t = *TEXT_STREAM_OWNER(object)->streams[object->stream_58]++;"
+new = "t = *(u8 *)G2H(TEXT_STREAM_OWNER(object)->streams[object->stream_58]++);"
+
+[[override]]
+file = "game/duel_effect_object_commands.c"
+pattern = "gaddr-field-nested-read-and-write-text-retarget"
+all = true
+reason = """
+`owner->streams[object->stream_58] =
+    Text_Retarget(owner->streams[object->stream_58], value & 0xFFFF);`
+(duel_effect_object_commands.c:25-26, identical at :42-43): owner->streams[idx]
+(GPTR(u8), TextStreamOwner) is both the call argument (Text_Retarget wants a
+real `unsigned char *cursor`, pc/text/text.h, needs G2H) and the assignment
+target (gaddr field, needs H2G around the whole call) in the same statement --
+same nested-edit class as T1.4d's GsMapCoordUnit/ev.ptr override and T1.4f's
+duel_card_effects.c q->buffer override: splicing the G2H argument fix and the
+H2G return-value fix independently would corrupt the file, and
+transform_c_expressions's nested-edit guard does not catch this particular
+shape (a plain function call, not a cast expression) -- left completely
+untouched, neither side transformed, only caught by the actual compile.
+Appears identically twice (func_800389D8, func_80038A44) -- `all = true`.
+"""
+old = """    owner->streams[object->stream_58] =
+        Text_Retarget(owner->streams[object->stream_58], value & 0xFFFF);"""
+new = """    owner->streams[object->stream_58] =
+        H2G(Text_Retarget(G2H(owner->streams[object->stream_58]), value & 0xFFFF));"""
+
+[[override]]
+file = "game/duel_field_display_objects.c"
+pattern = "gaddr-field-pointer-used-as-array-chain-base"
+all = true
+reason = """
+`source->entries[i].object`/`.field_04` (duel_field_display_objects.c:297,298,
+300,365,366,367,368): entries (GPTR(DisplayLinkEntry) entries, a scalar
+pointer field -- NOT a gaddr array field -- duel_field_display_objects.h)
+subscripted with retail's `entries[i]` array idiom (indexing through a pointer
+instead of a declared array), then chained with `.object`/`.field_04`.
+transform_c_expressions's ARRAY_SUBSCRIPT_EXPR case (the one that generalized
+T1.4d's `x.f[i]` for a true gaddr *array* field, e.g. GPTR(T) f[N]) assumes
+the subscripted field is itself declared as an array; for a scalar GPTR
+field used the same way at the call site, it only recognizes a subscript
+directly assigned/read/var-decl'd (its own grandparent checks), not one
+further chained with `->`/`.`, so it falls through unedited here -- the
+field itself needs G2H before the array subscript is applied, same as any
+other scalar GPTR field used as a C array (first occurrence of this specific
+shape; not generalized into the classifier, only 1 file/7 sites measured).
+Fixed by replacing the common base substring `source->entries[i]` (identical
+at every site regardless of what follows it) with the G2H'd, cast,
+re-subscripted equivalent -- `all = true`, one correct substitution
+regardless of position or trailing member access.
+"""
+old = "source->entries[i]"
+new = "((DisplayLinkEntry *)G2H(source->entries))[i]"
+
+[[override]]
+file = "game/duel_init_model_scene.c"
+pattern = "gaddr-field-array-element-as-call-argument"
+reason = """
+`func_80056250(2, D_80010000[0].payload_bases[0], 0x63000, 4);`
+(duel_init_model_scene.c:13): payload_bases (GPTR(u8) payload_bases[3], a true
+gaddr array field, HighMemoryModelAddressPrefix, ygo_types.h) read as a
+function-call argument. transform_c_expressions's ARRAY_SUBSCRIPT_EXPR case
+(generalized in T1.4d for a true gaddr array field) only recognizes the
+element being assigned, read into a VAR_DECL, or read on an assignment RHS --
+its own comment already anticipates a call-argument read as a case "not seen
+yet in this batch", falling through unedited. First occurrence of that
+anticipated gap; not generalized into the classifier (1 file/1 site
+measured).
+"""
+old = "func_80056250(2, D_80010000[0].payload_bases[0], 0x63000, 4);"
+new = "func_80056250(2, G2H(D_80010000[0].payload_bases[0]), 0x63000, 4);"

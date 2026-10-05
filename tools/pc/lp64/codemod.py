@@ -177,14 +177,90 @@ T14F_FILES = [
     "game/duel_card_state_helpers.c",
 ]
 
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES
+# T1.4g: chunk 2/5, same reasoning as T14F_FILES above -- alphabetical slice
+# measured in m1-codemod-stage2f.md, boundaries re-verified before this batch.
+T14G_FILES = [
+    "game/duel_card_turn_animations.c",
+    "game/duel_card_type_icon.c",
+    "game/duel_check_quit_input.c",
+    "game/duel_check_ritual.c",
+    "game/duel_create_card_effect_overlay.c",
+    "game/duel_cursor_status.c",
+    "game/duel_deck_lookup.c",
+    "game/duel_draw_resolution.c",
+    "game/duel_draw_status_numbers.c",
+    "game/duel_effect_basic_commands.c",
+    "game/duel_effect_command.c",
+    "game/duel_effect_command_table.c",
+    "game/duel_effect_create_channel.c",
+    "game/duel_effect_dialog_state.c",
+    "game/duel_effect_entry_control.c",
+    "game/duel_effect_entry_occupancy.c",
+    "game/duel_effect_entry_ranges.c",
+    "game/duel_effect_init_entry.c",
+    "game/duel_effect_init_entry_default_flags.c",
+    "game/duel_effect_mark_object_if_active.c",
+    "game/duel_effect_mode_7.c",
+    "game/duel_effect_noop_handlers.c",
+    "game/duel_effect_object_commands.c",
+    "game/duel_effect_object_pool.c",
+    "game/duel_effect_process_entries.c",
+    "game/duel_effect_request_update.c",
+    "game/duel_effect_resource_setup.c",
+    "game/duel_effect_sound_commands.c",
+    "game/duel_effect_state_callbacks.c",
+    "game/duel_effect_tables.c",
+    "game/duel_effect_update_object_layout.c",
+    "game/duel_effect_update_state.c",
+    "game/duel_field_card_objects.c",
+    "game/duel_field_display_objects.c",
+    "game/duel_field_effect_steps.c",
+    "game/duel_field_equip_search.c",
+    "game/duel_field_layout.c",
+    "game/duel_get_base_card_stat.c",
+    "game/duel_grid_offsets.c",
+    "game/duel_init_model_scene.c",
+    "game/duel_init_scene.c",
+    "game/duel_interface_setup.c",
+    "game/duel_load_package_stage.c",
+    "game/duel_load_terrain_package.c",
+    "game/duel_magic_effect_dispatch.c",
+    "game/duel_magic_effect_format.c",
+    "game/duel_monster_removal_rules.c",
+    "game/duel_phase_entry.c",
+    "game/duel_projection_axes.c",
+    "game/duel_request_combined_deck_data.c",
+    "game/duel_result_runtime.c",
+    "game/duel_reward_setup.c",
+    "game/duel_ritual_effect.c",
+    "game/duel_scene_battle.c",
+    "game/duel_scene_callbacks.c",
+    "game/duel_scene_card_placement.c",
+    "game/duel_scene_field_actions.c",
+    "game/duel_scene_hand_actions.c",
+    "game/duel_scene_turn_switch.c",
+    "game/duel_scene_update.c",
+    "game/duel_screen_tables.c",
+    "game/duel_select_trap_play.c",
+    "game/duel_selected_card_checks.c",
+    "game/duel_selection_update_linked_object.c",
+    "game/duel_shuffle_deck.c",
+    "game/duel_side_view_angles.c",
+    "game/duel_state_init.c",
+    "game/duel_swords_effect.c",
+    "game/duel_terrain_boost.c",
+    "game/duel_transition_step_table.c",
+    "game/duel_trap_resolution.c",
+]
+
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
