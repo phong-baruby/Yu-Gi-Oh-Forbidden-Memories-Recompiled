@@ -369,3 +369,133 @@ follows.
 """
 old = "slot->field_1E0[k]"
 new = "((ModelSlotPart *)G2H(slot->field_1E0[k]))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-via-function-like-macro-argument"
+all = true
+reason = """
+Same hazard class as func_8001B7AC.c's DUEL_CARD_DISPLAY_OBJECT_VIEW override
+above (see its reason): `DISPLAY_OBJECT_VIEW(object)` expands to
+`((DisplayObject *)(object))`; e->object (GPTR(void), duel_card.h) passed as
+`object` needs G2H, but transform_c_expressions cannot place that edit
+(degenerate source extent, macro-argument). Appears identically 4 times in
+this file (duel_card_effects.c:253,262,263,264) -- `all = true`, one correct
+substitution regardless of position.
+"""
+old = "DISPLAY_OBJECT_VIEW(e->object)"
+new = "DISPLAY_OBJECT_VIEW(G2H(e->object))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-via-function-like-macro-argument-r"
+all = true
+reason = """
+Same macro, same file, same hazard as the e->object override above -- just a
+different local variable name holding the same DuelCardRecord * (this file
+reuses DISPLAY_OBJECT_VIEW with whichever record pointer is in scope in each
+function). r->object: duel_card_effects.c:296,453,454,455.
+"""
+old = "DISPLAY_OBJECT_VIEW(r->object)"
+new = "DISPLAY_OBJECT_VIEW(G2H(r->object))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-via-function-like-macro-argument-p"
+reason = "Same macro/hazard as the overrides above, variable p this time. duel_card_effects.c:378."
+old = "DISPLAY_OBJECT_VIEW(p->object)"
+new = "DISPLAY_OBJECT_VIEW(G2H(p->object))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-via-function-like-macro-argument-record"
+reason = "Same macro/hazard as the overrides above, variable record this time. duel_card_effects.c:564."
+old = "DISPLAY_OBJECT_VIEW(record->object)"
+new = "DISPLAY_OBJECT_VIEW(G2H(record->object))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-via-function-like-macro-argument-duel-field-effect"
+reason = """
+Same hazard/macro-argument-extent class as the DISPLAY_OBJECT_VIEW overrides
+above, a different one-arg view macro this time
+(DUEL_FIELD_EFFECT_OBJECT_VIEW). record->object: duel_card_effects.c:520.
+"""
+old = "DUEL_FIELD_EFFECT_OBJECT_VIEW(record->object)"
+new = "DUEL_FIELD_EFFECT_OBJECT_VIEW(G2H(record->object))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-field-nested-read-and-write"
+reason = """
+`q->buffer = (u8 *)q->buffer + D_8009B20C[1] * 0x3000;` (duel_card_effects.c:452):
+q->buffer (GPTR(void), duel_effect_request.h) is both read (RHS pointer
+arithmetic operand, needs G2H) and written (LHS, needs H2G wrapping the whole
+RHS) in the same statement -- classify_write's cast-operand branch would copy
+the RHS text verbatim into the H2G(...) wrapper, but that copied text itself
+contains the same field needing its own G2H edit, so splicing both
+independently corrupts the file (same nested-edit class as T1.4d's
+GsMapCoordUnit/ev.ptr override; see transform_c_expressions's pre-splice
+overlap check, which catches this and aborts rather than guessing).
+"""
+old = "q->buffer = (u8 *)q->buffer + D_8009B20C[1] * 0x3000;"
+new = "q->buffer = H2G((u8 *)G2H(q->buffer) + D_8009B20C[1] * 0x3000);"
+
+[[override]]
+file = "game/display_effect_update_callbacks.c"
+pattern = "gaddr-field-array-element-chain-write-x"
+reason = """
+`group->children[i]->x = x;` (display_effect_update_callbacks.c:49):
+children (GPTR(DisplayPositionChild) children[3], display_object_position.h)
+indexed, then the element used as the base of a further `->` WRITE --
+transform_c_expressions has no case for a gaddr array element as a chain
+base (only the plain-field chain-read case; see T1.4d's field_1E0[k] override
+for the same class on a different file/field).
+"""
+old = "group->children[i]->x = x;"
+new = "((DisplayPositionChild *)G2H(group->children[i]))->x = x;"
+
+[[override]]
+file = "game/display_effect_update_callbacks.c"
+pattern = "gaddr-field-array-element-chain-write-y"
+reason = "Same site/class as the ->x override above, the paired ->y write. display_effect_update_callbacks.c:50."
+old = "group->children[i]->y = y;"
+new = "((DisplayPositionChild *)G2H(group->children[i]))->y = y;"
+
+[[override]]
+file = "game/display_object_stream_read_next_command.c"
+pattern = "gaddr-field-bare-arithmetic-operand"
+all = true
+reason = """
+`p = object->current + (u16)object->field_58;` (lines 12, 22, identical):
+object->current (GPTR(u8), DisplayObjectStreamState) used as a bare `+`
+operand with no cast/assignment context transform_c_expressions can key off
+of -- same ambiguity class as T1.4d's AiScript_Jump-family bare-operand cases
+(ADR-05 (4)), resolved per-site by reading what the result is used for: here
+it's assigned to `u8 *p`, later dereferenced (`op = *p`), so it must be real
+host-pointer arithmetic, not guest-address arithmetic -- confirmed via the
+field's own declared type (u8 *current) and the struct's doc comment.
+"""
+old = "p = object->current + (u16)object->field_58;"
+new = "p = (u8 *)G2H(object->current) + (u16)object->field_58;"
+
+[[override]]
+file = "game/display_object_helpers.c"
+pattern = "gaddr-field-bare-arithmetic-return"
+reason = """
+Same hazard/ambiguity class as this file's own `p = object->current + ...`
+override just above (T1.4e), on a different struct (DisplayObjectStream.base,
+not DisplayObjectStreamState.current) and a different context (bare `return`,
+not an assignment) -- transform_c_expressions has no case for a gaddr field
+as a bare operand under `return` either. `return object->base + (...);`
+(display_object_helpers.c:320): base (GPTR(u8), display_object_helpers.h)
+used as a `+` operand with no cast context to key off of; the function's own
+declared result type (`u8 *DisplayObjectStream_ResolveOffset`) confirms this
+must be real host-pointer arithmetic, not guest-address arithmetic (compare
+display_object_runtime.c:331/342 and display_object_stream_read_next_command.c:30,
+where the same `object->base + offset` expression is assigned to another
+gaddr-typed field instead and is correctly left as plain gaddr arithmetic --
+same source idiom, different target type, different correct answer).
+"""
+old = "return object->base + ((data[1] << 8) | data[0]);"
+new = "return (u8 *)G2H(object->base) + ((data[1] << 8) | data[0]);"

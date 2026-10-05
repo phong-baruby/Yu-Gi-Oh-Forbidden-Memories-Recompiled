@@ -96,14 +96,95 @@ DEFAULT_GLOBS = ["*.h", "game/**/*.h", "overlays/**/*.h", "psyq/*.h"]  # relativ
 # ADR-05 (2)/(3) sites directly in source instead, #ifdef MEMORIES_LP64-
 # guarded (docs/macos/reports/m1-codemod-stage2a.md). Later T1.4 batches add
 # their own src/game/src/overlays patterns here.
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"]
+# T1.4f: chunk 1/5 of the 352 src/game/*.c files left after T1.4a-e (ai_*,
+# func_800[0-3]*, func_800[4-9]* already done; T1.4e's pc/ files needed no
+# codemod entry at all -- see m1-codemod-stage2e.md). No common filename
+# prefix across these (they're named after their function, not an address
+# range), so listed explicitly rather than as a glob pattern -- alphabetical
+# slice, boundaries measured in m1-codemod-stage2f.md. T1.4g-j (the other 4
+# chunks) get their own such list when their turn comes.
+T14F_FILES = [
+    "game/build_deck_active_card.c",
+    "game/build_deck_card_counts.c",
+    "game/build_deck_deck_capacity.c",
+    "game/build_deck_pane_input.c",
+    "game/campaign_ensure_story_flag.c",
+    "game/campaign_load_scene_package_stage.c",
+    "game/campaign_load_scene_package.c",
+    "game/campaign_map_load_package_stage.c",
+    "game/campaign_test_story_flag.c",
+    "game/card_list_render_deck_box_stats.c",
+    "game/card_list_sort.c",
+    "game/card_list_text_boxes.c",
+    "game/card_preview_update_variant.c",
+    "game/card_type_icon_table.c",
+    "game/checkerboard_background.c",
+    "game/color_transform.c",
+    "game/credits_secret_numbers.c",
+    "game/data_80091510.c",
+    "game/data_8009af10.c",
+    "game/data_8009af6c.c",
+    "game/debug_effect_screen.c",
+    "game/debug_font_format_data.c",
+    "game/debug_menu_bust_up_entry.c",
+    "game/debug_menu_editor_entries.c",
+    "game/debug_menu_leave_entries.c",
+    "game/debug_menu_two_player_entry.c",
+    "game/debug_menu_update_cursor_layout.c",
+    "game/debug_menu_update.c",
+    "game/dialog_choice_cursor.c",
+    "game/dialog_transition.c",
+    "game/dialog_update_choice.c",
+    "game/display_effect_lifecycle.c",
+    "game/display_effect_process_menu_records.c",
+    "game/display_effect_resource_setup.c",
+    "game/display_effect_step_table.c",
+    "game/display_effect_update_callbacks.c",
+    "game/display_flat_lights.c",
+    "game/display_object_alpha_transition.c",
+    "game/display_object_brightness.c",
+    "game/display_object_core.c",
+    "game/display_object_fade_callbacks.c",
+    "game/display_object_fade_helpers.c",
+    "game/display_object_helpers.c",
+    "game/display_object_interpolation.c",
+    "game/display_object_list_renderer_table.c",
+    "game/display_object_motion.c",
+    "game/display_object_projection_checks.c",
+    "game/display_object_property_transitions.c",
+    "game/display_object_render_spotlight_mask.c",
+    "game/display_object_render_sprite_sheet_list.c",
+    "game/display_object_render_sprite_sheet.c",
+    "game/display_object_runtime.c",
+    "game/display_object_stream_read_next_command.c",
+    "game/display_object_transition.c",
+    "game/display_object_update_command_stream.c",
+    "game/display_object_updates.c",
+    "game/display_parent_links.c",
+    "game/display_projection.c",
+    "game/duel_action_lock.c",
+    "game/duel_apply_card_object_flags.c",
+    "game/duel_battle_stats.c",
+    "game/duel_calc_card_stats.c",
+    "game/duel_calc_guardian_star_matchup.c",
+    "game/duel_card_checks.c",
+    "game/duel_card_data_transfer.c",
+    "game/duel_card_effects.c",
+    "game/duel_card_frame_draw.c",
+    "game/duel_card_object_helpers.c",
+    "game/duel_card_record_lifecycle.c",
+    "game/duel_card_stat_display.c",
+    "game/duel_card_state_helpers.c",
+]
+
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"]
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
