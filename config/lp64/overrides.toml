@@ -699,3 +699,90 @@ measured).
 """
 old = "func_80056250(2, D_80010000[0].payload_bases[0], 0x63000, 4);"
 new = "func_80056250(2, G2H(D_80010000[0].payload_bases[0]), 0x63000, 4);"
+
+[[override]]
+file = "game/library_runtime.c"
+pattern = "gaddr-field-via-function-like-macro-argument-W"
+all = true
+reason = """
+Same hazard/macro-argument class as the DISPLAY_OBJECT_VIEW-family overrides
+(T1.4d-g), a different one-arg accessor macro this time: `W(p, o)` (this
+file's own `#define W(p, o) (*(s32 *)((u8 *)(p) + (o)))`) needs a real host
+pointer for `p`; rec->object_04 (GPTR void, DuelEffectResourceRecord,
+duel_effect_resource_record.h) passed directly needs G2H, but
+transform_c_expressions cannot place that edit (degenerate source extent).
+Substring (not the whole statement -- same substitution needed regardless of
+the surrounding `|=`/`&=` operator or mask) appears identically twice:
+library_runtime.c:245,455 -- `all = true`.
+"""
+old = "W(rec->object_04, 4) |= 0x80000000;"
+new = "W(G2H(rec->object_04), 4) |= 0x80000000;"
+
+[[override]]
+file = "game/library_runtime.c"
+pattern = "gaddr-field-via-function-like-macro-argument-W-clear"
+reason = """
+Same hazard/macro class as the override above, the paired "clear the high
+bit" site instead of "set" (same field, different mask/operator).
+library_runtime.c:279.
+"""
+old = "W(rec->object_04, 4) &= 0x7FFFFFFF;"
+new = "W(G2H(rec->object_04), 4) &= 0x7FFFFFFF;"
+
+[[override]]
+file = "game/library_runtime.c"
+pattern = "gaddr-field-via-function-like-macro-argument-H"
+reason = """
+Same hazard/macro-argument class as the W(...) overrides above, the H(p, o)
+accessor this time (`#define H(p, o) (*(u16 *)((u8 *)(p) + (o)))`) on the
+sibling field rec->object_00 (GPTR void, same struct). library_runtime.c:436.
+"""
+old = "H(rec->object_00, 8) |= 4;"
+new = "H(G2H(rec->object_00), 8) |= 4;"
+
+[[override]]
+file = "game/library_runtime.c"
+pattern = "gaddr-field-via-function-like-macro-argument-H-channel"
+all = true
+reason = """
+Same hazard/macro-argument class as the H(...)/W(...) overrides above,
+D_800EB0F8[3].field_28 this time (GPTR struct DisplayObject *field_28,
+DuelEffectChannel, ygo_types.h -- a global array element, not a local
+variable's field). Substring common to both sites regardless of the trailing
+operator/mask -- library_runtime.c:298,464 -- `all = true`.
+"""
+old = "H(D_800EB0F8[3].field_28, 8)"
+new = "H(G2H(D_800EB0F8[3].field_28), 8)"
+
+[[override]]
+file = "game/library_runtime.c"
+pattern = "gaddr-field-write-from-function-like-macro-argument"
+reason = """
+Same class as T1.4f's func_800323F8.c/duel_scene_hand_actions.c overrides:
+`LIBRARY_MOTION_STATE_VIEW(r)->render = DISPLAY_OBJECT_VIEW(o);` -- render
+(GPTR struct DisplayObject *, LibraryMotionState, ygo_types.h) is gaddr, RHS
+macro expands to `(DisplayObject *)(o)` where o is a real host pointer
+(DisplayObject_AcquireSlot's return value a few lines up), but the
+macro-wrapped RHS degrades classify_write's own extent the same way. Fixed
+identically: drop the now-pointless macro, H2G-wrap the real pointer
+directly. library_runtime.c:791.
+"""
+old = "LIBRARY_MOTION_STATE_VIEW(r)->render = DISPLAY_OBJECT_VIEW(o);"
+new = "LIBRARY_MOTION_STATE_VIEW(r)->render = H2G(o);"
+
+[[override]]
+file = "game/gpu_packets.c"
+pattern = "gaddr-field-pointer-used-as-array-single-level"
+all = true
+reason = """
+Same hazard as func_80033DB0.c/func_80034830.c's `arg->tagp->org[z]` override
+(see its reason), one level simpler: ot (GsOT *, a direct parameter here, not
+chained through another gaddr field) -- org itself (GPTR(GsOT_TAG) org, a
+scalar pointer field, GsOT) is still subscripted with the retail array idiom.
+transform_c_expressions's ARRAY_SUBSCRIPT_EXPR case does not cover this shape
+(same class of gap as T1.4g's duel_field_display_objects.c `entries[i]`
+override). Appears identically 3 times (func_8005B260, Graphics_SubmitTextureWindowPacket,
+func_8005B4D8) -- `all = true`.
+"""
+old = "&ot->org[index & 0xFFFF]"
+new = "&((GsOT_TAG *)G2H(ot->org))[index & 0xFFFF]"

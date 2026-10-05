@@ -253,14 +253,90 @@ T14G_FILES = [
     "game/duel_trap_resolution.c",
 ]
 
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES
+# T1.4h: chunk 3/5, same reasoning as T14F_FILES above -- alphabetical slice
+# measured in m1-codemod-stage2f.md, boundaries re-verified before this batch.
+T14H_FILES = [
+    "game/duel_update_card_pick_cursor.c",
+    "game/duel_update_draw_card_slide.c",
+    "game/fade_init.c",
+    "game/fade_runtime.c",
+    "game/fade_step_bands.c",
+    "game/file_cd_helpers.c",
+    "game/file_names.c",
+    "game/file_query_wrappers.c",
+    "game/file_request_game_over_package.c",
+    "game/file_set_position_table.c",
+    "game/file_stream.c",
+    "game/file_transfer_flags.c",
+    "game/file_transfer_runtime.c",
+    "game/file_wait_for_transfers.c",
+    "game/free_duel_load_package_stage.c",
+    "game/frontend_debug_constants.c",
+    "game/frontend_debug_tables.c",
+    "game/frontend_package_stages.c",
+    "game/frontend_scene_states.c",
+    "game/frontend_step_tables.c",
+    "game/game_over.c",
+    "game/gpu_packets.c",
+    "game/graphics_frame.c",
+    "game/input_is_pad1_confirm_pressed.c",
+    "game/input_pad1_backup.c",
+    "game/input_pads.c",
+    "game/library_grid_cursor.c",
+    "game/library_runtime.c",
+    "game/library_update_card_used_flag.c",
+    "game/main_apply_menu_selection.c",
+    "game/main_boot_load_stages.c",
+    "game/main_debug.c",
+    "game/main_frame.c",
+    "game/main_init.c",
+    "game/main_init_free_duel_menu.c",
+    "game/main_loop.c",
+    "game/main_menu_load_package_stage.c",
+    "game/main_menu_load_rect.c",
+    "game/main_mode_runners.c",
+    "game/main_modes.c",
+    "game/main_reset_frontend_runtime.c",
+    "game/main_run_animated_battle.c",
+    "game/main_run_boot_sequence.c",
+    "game/main_run_build_deck_menu.c",
+    "game/main_run_campaign.c",
+    "game/main_run_credits.c",
+    "game/main_run_duel.c",
+    "game/main_run_duel_and_library.c",
+    "game/main_run_free_duel_menu.c",
+    "game/main_run_frontend_loop.c",
+    "game/main_run_frontend_menus.c",
+    "game/main_run_name_entry.c",
+    "game/main_run_password_menu.c",
+    "game/main_run_selection_menus.c",
+    "game/main_run_two_player_duel_setup.c",
+    "game/main_services.c",
+    "game/mdec_sync.c",
+    "game/mem_card_dialog_load_save.c",
+    "game/mem_card_dialog_runtime.c",
+    "game/mem_card_dialog_steps.c",
+    "game/mem_card_driver.c",
+    "game/mem_card_io_result_callbacks.c",
+    "game/menu_record_reset.c",
+    "game/model_apply_texture_tint.c",
+    "game/model_buffer_getters.c",
+    "game/model_build_camera_relative_coordinate_unit.c",
+    "game/model_control.c",
+    "game/model_control_slot_animation.c",
+    "game/model_debug_controller.c",
+    "game/model_disc_effect.c",
+    "game/model_distance_queries.c",
+]
+
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as
