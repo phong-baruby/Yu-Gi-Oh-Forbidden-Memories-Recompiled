@@ -1,5 +1,13 @@
 # M1 — Codemod giai đoạn 2, batch g: src/game chunk 2/5 (T1.4g)
 
+> **Sửa lại (2026-10-05, phát hiện ở T1.4i):** con số "57/71" dưới đây SAI, cùng nguyên nhân đã ghi ở
+> đầu `m1-codemod-stage2f.md` (lỗi cờ `-w` trong lệnh compile-check). Số liệu đúng: **50/71 file thật sự
+> compile sạch**; 14 file loại trừ ADR-03/04 bên dưới vẫn đúng, cộng thêm **7 file khác** thuộc nhóm
+> "con trỏ host thật bị ép xuống s32/u32 qua biến cục bộ" (T1.4e): `duel_effect_command.c`,
+> `duel_effect_resource_setup.c`, `duel_load_package_stage.c`, `duel_request_combined_deck_data.c`,
+> `duel_reward_setup.c`, `duel_shuffle_deck.c`, `duel_trap_resolution.c`. Chi tiết:
+> `docs/macos/reports/m1-codemod-stage2i.md` và `PROGRESS.md`'s decision log 2026-10-05.
+
 **Kết quả: 57/71 file đạt acceptance. 14 file loại khỏi tiêu chí, đều thuộc 2 nguyên nhân ADR-03/ADR-04
 đã biết từ T1.4c-f — không có nguyên nhân mới trong nhóm loại trừ. 4 pattern mới cho
 `transform_c_expressions`, cả 4 xử lý bằng override (không tổng quát hoá, quy mô quá nhỏ).**

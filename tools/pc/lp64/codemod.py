@@ -329,14 +329,90 @@ T14H_FILES = [
     "game/model_distance_queries.c",
 ]
 
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES
+# T1.4i: chunk 4/5, same reasoning as T14F_FILES above -- alphabetical slice
+# measured in m1-codemod-stage2f.md, boundaries re-verified before this batch.
+T14I_FILES = [
+    "game/model_effect_coefficient_table.c",
+    "game/model_effect_endpoints.c",
+    "game/model_effect_requests.c",
+    "game/model_effect_state.c",
+    "game/model_effect_wrapped_value.c",
+    "game/model_geometry_tables.c",
+    "game/model_graphics_state.c",
+    "game/model_handler_diagnostics.c",
+    "game/model_handler_registry.c",
+    "game/model_handler_state.c",
+    "game/model_has_insufficient_buffer_space.c",
+    "game/model_image_copy_frames.c",
+    "game/model_interpolate_transform.c",
+    "game/model_intro_controller.c",
+    "game/model_keyframe_update.c",
+    "game/model_load_monster_merge.c",
+    "game/model_load_step.c",
+    "game/model_packet_handlers.c",
+    "game/model_primitive_handler.c",
+    "game/model_primitive_templates.c",
+    "game/model_record_tables.c",
+    "game/model_scene_setup.c",
+    "game/model_scene_states.c",
+    "game/model_sequence_dispatch.c",
+    "game/model_slot_properties.c",
+    "game/model_slot_queries.c",
+    "game/model_slot_row_tables.c",
+    "game/model_slot_setup.c",
+    "game/model_slot_state_updates.c",
+    "game/model_slot_support.c",
+    "game/model_slot_updates.c",
+    "game/model_state_getters.c",
+    "game/model_state_setters.c",
+    "game/model_subdivided_effect.c",
+    "game/model_texture_transfer.c",
+    "game/model_texture_upload.c",
+    "game/model_transfer_flags_state.c",
+    "game/model_update_view_metrics.c",
+    "game/model_word_memory.c",
+    "game/movie_frame_pipeline.c",
+    "game/movie_frame_pipeline_state.c",
+    "game/movie_playback_control.c",
+    "game/movie_stream_ranges.c",
+    "game/movie_stream_requests.c",
+    "game/name_entry_load_package_stage.c",
+    "game/noop_callbacks.c",
+    "game/options_layout_position_data.c",
+    "game/options_screen.c",
+    "game/password_load_package_stage.c",
+    "game/rand_get_interval.c",
+    "game/save_data_mask_state.c",
+    "game/save_data_payload.c",
+    "game/save_data_set_mask_seed.c",
+    "game/save_data_transfer_runtime.c",
+    "game/scene_image_overlay_tables.c",
+    "game/scene_script_record_callbacks.c",
+    "game/scene_script_slots.c",
+    "game/script_command_busy.c",
+    "game/script_command_table.c",
+    "game/script_control_commands.c",
+    "game/script_flag_commands.c",
+    "game/script_image_commands.c",
+    "game/script_image_objects.c",
+    "game/script_image_rebuild.c",
+    "game/script_noop_commands.c",
+    "game/script_op_duel_result.c",
+    "game/script_op_fade_out.c",
+    "game/script_op_jump_if_deck_incomplete.c",
+    "game/script_op_load_image_scene.c",
+    "game/script_op_return_to_menu.c",
+    "game/script_op_save_prompt.c",
+]
+
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as

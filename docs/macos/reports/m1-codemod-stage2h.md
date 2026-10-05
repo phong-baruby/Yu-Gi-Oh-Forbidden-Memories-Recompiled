@@ -1,5 +1,14 @@
 # M1 — Codemod giai đoạn 2, batch h: src/game chunk 3/5 (T1.4h)
 
+> **Sửa lại (2026-10-05, phát hiện ở T1.4i):** con số "64/71" dưới đây SAI, cùng nguyên nhân đã ghi ở
+> đầu `m1-codemod-stage2f.md` (lỗi cờ `-w` trong lệnh compile-check). Số liệu đúng: **52/71 file thật sự
+> compile sạch**; 6 file ADR-03/04 + 1 file pointer-stride bên dưới vẫn đúng, cộng thêm **12 file khác**
+> thuộc nhóm "con trỏ host thật bị ép xuống s32/u32 qua biến cục bộ" (T1.4e): `file_set_position_table.c`,
+> `free_duel_load_package_stage.c`, `frontend_package_stages.c`, `game_over.c`, `gpu_packets.c`,
+> `input_pads.c`, `library_runtime.c`, `main_boot_load_stages.c`, `main_menu_load_package_stage.c`,
+> `main_services.c`, `mem_card_driver.c`, `model_control.c`. Chi tiết:
+> `docs/macos/reports/m1-codemod-stage2i.md` và `PROGRESS.md`'s decision log 2026-10-05.
+
 **Kết quả: 64/71 file đạt acceptance. 7 file loại khỏi tiêu chí: 6 khớp ADR-03/ADR-04 đã biết, 1 thuộc
 nhóm nguyên nhân MỚI (hỏi fen qua `AskUserQuestion` trước khi quyết định) — con trỏ-đôi native stride đi
 bộ qua mảng gaddr, không phải lỗi compile đơn thuần mà là rủi ro bộ nhớ thật nếu ép kiểu cho qua.**

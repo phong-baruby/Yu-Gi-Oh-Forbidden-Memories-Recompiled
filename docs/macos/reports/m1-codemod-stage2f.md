@@ -1,5 +1,17 @@
 # M1 — Codemod giai đoạn 2, batch f: src/game phần còn lại, chunk 1/5 (T1.4f)
 
+> **Sửa lại (2026-10-05, phát hiện ở T1.4i):** con số "61/71" dưới đây SAI do lỗi trong chính lệnh
+> compile-check (cờ `-w` vô hiệu hoá luôn `-Werror=pointer-to-int-cast`/`-Werror=int-to-pointer-cast`,
+> chỉ `-Werror=int-conversion` còn tác dụng — lỗi quy trình xác minh, không phải code sai thêm). Số
+> liệu đúng: **50/71 file thật sự compile sạch**; 10 file loại trừ ADR-03/04 bên dưới vẫn đúng, cộng
+> thêm **11 file khác** hoá ra cũng chưa compile sạch, thuộc đúng nhóm "con trỏ host thật bị ép xuống
+> s32/u32 qua biến cục bộ" đã ghi nhận từ T1.4e (`build_deck_pane_input.c`,
+> `campaign_load_scene_package_stage.c`, `campaign_map_load_package_stage.c`, `card_list_sort.c`,
+> `dialog_transition.c`, `display_effect_process_menu_records.c`, `display_effect_update_callbacks.c`,
+> `display_object_helpers.c`, `display_object_projection_checks.c`,
+> `display_object_render_sprite_sheet.c`, `display_object_update_command_stream.c`). Chi tiết đầy đủ:
+> `docs/macos/reports/m1-codemod-stage2i.md` và `PROGRESS.md`'s decision log 2026-10-05.
+
 **Kết quả: 61/71 file đạt acceptance. 10 file loại khỏi tiêu chí, đều thuộc 2 nguyên nhân ADR-03/ADR-04
 đã biết từ T1.4c/d — không có nguyên nhân mới trong nhóm loại trừ.**
 

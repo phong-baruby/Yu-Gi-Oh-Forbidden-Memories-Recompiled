@@ -786,3 +786,209 @@ func_8005B4D8) -- `all = true`.
 """
 old = "&ot->org[index & 0xFFFF]"
 new = "&((GsOT_TAG *)G2H(ot->org))[index & 0xFFFF]"
+
+[[override]]
+file = "game/model_slot_updates.c"
+pattern = "gaddr-field-offsetof-via-macro-in-c-file"
+reason = """
+`extern char GsCOORDUNIT_super_offset_must_be_0x4C[MODEL_UNIT_OFFSET(super) ==
+0x4C ? 1 : -1];` (model_slot_updates.c:31-32):
+`#define MODEL_UNIT_OFFSET(member) ((u32)&(((GsCOORDUNIT *)0)->member))` is
+the standard offsetof-via-NULL idiom (ADR-05 item 9, normally handled project-
+wide by fix_offsetof_casts's text-level (uintptr_t) insertion -- and it DOES
+fire here too, on the macro's own definition line, same as for this file's
+other 4 assertions on non-pointer GsCOORDUNIT members). The difference: super
+(struct _GsCOORDUNIT *super, psyq/libhmd.h) is itself a GPTR field, so its
+`->super` access, reached through this macro's `member` parameter, is a gaddr-
+typed MEMBER_REF_EXPR transform_c_expressions's AST walk still visits and
+cannot classify (degenerate source extent, macro argument) -- fix_offsetof_
+casts's text fix and transform_c_expressions's AST walk are two independent
+passes, and only the former's fix applies inside a macro *definition*; the
+latter still chokes on any gaddr field use it finds via a macro *call*,
+offsetof context or not. First time this exact combination (offsetof-via-
+macro targeting a POINTER field) has landed inside a *.c* file's own top-level
+declaration rather than a header (where transform_c_expressions never runs at
+all) -- headers elsewhere use the identical idiom on pointer fields safely
+(e.g. ygo_types.h's YGO_TYPE_OFFSET calls), just never through this AST pass.
+Fixed by replacing the macro call with its own already-correct expansion
+(same text fix_offsetof_casts would have produced for a non-macro use),
+bypassing the AST walk entirely for this one expression.
+"""
+old = "MODEL_UNIT_OFFSET(super)"
+new = "(u32)(uintptr_t)&(((GsCOORDUNIT *)0)->super)"
+
+[[override]]
+file = "game/model_scene_setup.c"
+pattern = "gaddr-field-array-element-chain-write-sid-j"
+reason = """
+`slot->field_1E0[j]->sid = sid;` (model_scene_setup.c:253): field_1E0
+(GPTR(ModelSlotPart) field_1E0[58], a true gaddr array field, model.h)
+subscripted then chained with `->sid` -- transform_c_expressions's
+ARRAY_SUBSCRIPT_EXPR case (generalized in T1.4d for assignment/VAR_DECL/
+plain-read grandparents) does not recognize a further `->` chain as
+grandparent (same gap class as T1.4g's duel_field_display_objects.c
+`entries[i].object` and T1.4i's model_slot_row_tables.c `field_1E0[i]->start`
+below) -- falls through unedited.
+"""
+old = "slot->field_1E0[j]->sid = sid;"
+new = "((ModelSlotPart *)G2H(slot->field_1E0[j]))->sid = sid;"
+
+[[override]]
+file = "game/model_scene_setup.c"
+pattern = "gaddr-field-array-element-chain-write-sid-k"
+reason = "Same site/class as the ->sid override above, the paired loop using k instead of j and keep instead of sid. model_scene_setup.c:272."
+old = "slot->field_1E0[k]->sid = keep;"
+new = "((ModelSlotPart *)G2H(slot->field_1E0[k]))->sid = keep;"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-array-element-chain-read-start"
+reason = """
+Same hazard/class as model_scene_setup.c's `field_1E0[j]->sid` override above
+(see its reason) -- `key = ch->field_1E0[i]->start;` reads instead of writes,
+different member (start). model_slot_row_tables.c:429.
+"""
+old = "key = ch->field_1E0[i]->start;"
+new = "key = ((ModelSlotPart *)G2H(ch->field_1E0[i]))->start;"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-pointer-used-as-array"
+all = true
+reason = """
+field_DD8 (GPTR(s32) field_DD8, a scalar pointer field, model.h -- "the base
+of 4-byte command records", per this file's own field_DD8 comment in model.h)
+used with the retail `&ch->field_DD8[idx]` array idiom throughout this file --
+same class as T1.4g's duel_field_display_objects.c `entries[i]` and T1.4h's
+gpu_packets.c `ot->org[idx]` overrides. Appears identically (same base
+substring, 5 sites with different indices) -- `all = true`.
+"""
+old = "ch->field_DD8["
+new = "((s32 *)G2H(ch->field_DD8))["
+
+[[override]]
+file = "game/model_slot_support.c"
+pattern = "gaddr-field-bare-arithmetic-return"
+reason = """
+Same class as T1.4f's display_object_helpers.c override (see its reason):
+`return entry->entries + slot * MODEL_SLOT_DATA_ENTRY_SIZE;` -- entries
+(GPTR(u8) entries, ModelSlot, model.h -- the guest-RAM data-entry run this
+slot owns) used as a bare `+` operand under `return`, no cast/assignment
+context transform_c_expressions can key off of. Function's own declared
+result type (`void *Model_GetSlotDataEntry`) confirms real host-pointer
+arithmetic is needed. model_slot_support.c:18.
+"""
+old = "return entry->entries + slot * MODEL_SLOT_DATA_ENTRY_SIZE;"
+new = "return (u8 *)G2H(entry->entries) + slot * MODEL_SLOT_DATA_ENTRY_SIZE;"
+
+[[override]]
+file = "game/model_update_view_metrics.c"
+pattern = "gaddr-field-null-assign-via-system-NULL"
+reason = """
+`unit.super = NULL;` (model_update_view_metrics.c:128): super is gaddr
+(GPTR struct _GsCOORDUNIT *super, GsCOORDUNIT, psyq/libhmd.h). This file does
+not pull in psyq/stddef.h's `#define NULL 0` (used project-wide, a plain
+int) -- some other transitive include reaches the arm64 SDK's own <stddef.h>
+instead, where `NULL` is `((void *)0)`, a real pointer constant -- assigning
+that to gaddr needs translation same as any other pointer value would, but
+because it is a null-pointer constant specifically, G2H-wrapping it is both
+unnecessary and wrong (G2H aborts on any address outside g_ram/g_scratch,
+NULL included). The two NULL definitions are value-identical (0), so
+replacing the literal macro name with the plain integer it would have
+expanded to under the project's own NULL sidesteps the ambiguity entirely
+without changing behavior on any platform.
+"""
+old = "unit.super = NULL;"
+new = "unit.super = 0;"
+
+[[override]]
+file = "game/script_image_rebuild.c"
+pattern = "gaddr-field-via-function-like-macro-field-access-argument-1"
+all = true
+reason = """
+`SCRIPT_IMAGE_ENTRY_OBJECT(p->entries[1])->field_30...` --
+`#define SCRIPT_IMAGE_ENTRY_OBJECT(entry) ((DisplayObject *)(entry).pointer)`
+(this file) is a new shape of the established macro-argument-degenerate-
+extent hazard (T1.4d-h's `_VIEW`-style macros): instead of casting its whole
+argument directly, it reaches into a `.pointer` member of it first
+(ScriptImageEntry.pointer, GPTR void, ygo_types.h) -- same unplaceable-edit
+problem either way. Appears identically twice (p->entries[1], :80,82) --
+`all = true`. Fixed by inlining the macro's own body with the needed G2H
+(the macro's cast is then redundant with G2H's own void* result but kept for
+readability/consistency with every other site in the file).
+"""
+old = "SCRIPT_IMAGE_ENTRY_OBJECT(p->entries[1])"
+new = "((DisplayObject *)G2H(p->entries[1].pointer))"
+
+[[override]]
+file = "game/script_image_rebuild.c"
+pattern = "gaddr-field-via-function-like-macro-field-access-argument-2"
+all = true
+reason = "Same hazard/class as the p->entries[1] override above (see its reason), the paired p->entries[2] slot. Appears identically 3 times (:88,90,94)."
+old = "SCRIPT_IMAGE_ENTRY_OBJECT(p->entries[2])"
+new = "((DisplayObject *)G2H(p->entries[2].pointer))"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-bare-subtraction-operand-g"
+reason = """
+`*(s16 *)c = g - ch->field_DD8;` (model_slot_row_tables.c:564): field_DD8
+(GPTR(s32), scalar, model.h) used as the RHS of pointer-difference arithmetic
+(g: s32 *, set earlier in this function from `&ch->field_DD8[...]`, already
+G2H'd by this file's own `ch->field_DD8[` override above) -- expects
+pointer-pointer subtraction (ptrdiff_t, the element index between the two),
+but with field_DD8 left as plain gaddr this becomes pointer-minus-integer
+(another pointer), caught only downstream when that pointer is assigned to
+`s16`. Same "bare arithmetic operand" ambiguity class as T1.4f/i's `+`-operand
+overrides (display_object_helpers.c, model_slot_support.c), `-` this time.
+"""
+old = "*(s16 *)c = g - ch->field_DD8;"
+new = "*(s16 *)c = g - (s32 *)G2H(ch->field_DD8);"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-bare-subtraction-operand-c"
+reason = "Same site/class as the override above, the paired `c - ch->field_DD8` assignment (c and a instead of g and c). model_slot_row_tables.c:565."
+old = "*(s16 *)a = c - ch->field_DD8;"
+new = "*(s16 *)a = c - (s32 *)G2H(ch->field_DD8);"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-bare-subtraction-operand-t"
+reason = "Same hazard/class as the two overrides above, wrapped in an extra `+ 1` (t and a instead of g/c and c/a). model_slot_row_tables.c:571."
+old = "*(s16 *)a = (t - ch->field_DD8) + 1;"
+new = "*(s16 *)a = (t - (s32 *)G2H(ch->field_DD8)) + 1;"
+
+[[override]]
+file = "game/model_slot_row_tables.c"
+pattern = "gaddr-field-raw-reload-reinterpret-cast"
+reason = """
+`(a - (s32 *)*(volatile s32 *)&ch->field_DD8)` (model_slot_row_tables.c:570,
+see this file's own comment right above it: "Reloaded rather than reusing the
+base the links above already hold: retail reads the member again here"):
+a hand-written volatile reload of field_DD8's raw bytes (`&ch->field_DD8`
+itself is a real host address -- ch is a real host ModelSlot, not guest RAM
+-- so transform_c_expressions correctly leaves the `&` alone; nothing to G2H
+there), then reinterpreting the reloaded raw gaddr value directly as a host
+`s32 *` -- exactly the shape the other field_DD8 overrides in this file fix,
+just reached through an extra read-and-cast rather than a direct field
+reference, so the field reference text match used by every override above
+does not apply here. `(s32 *)rawvalue` needs to become `(s32 *)G2H(rawvalue)`
+instead of a direct reinterpret-cast.
+"""
+old = "(a - (s32 *)*(volatile s32 *)&ch->field_DD8)"
+new = "(a - (s32 *)G2H(*(volatile s32 *)&ch->field_DD8))"
+
+[[override]]
+file = "game/model_interpolate_transform.c"
+pattern = "gaddr-field-pointer-used-as-array"
+all = true
+reason = """
+`slot->output[N] = ...;` (model_interpolate_transform.c:149-157, 9 sites):
+output (GPTR(u16), a scalar pointer field, model_packet_handlers.h) used with
+the retail array idiom -- same class as T1.4g/h/i's `entries[i]`/`org[idx]`/
+`field_DD8[idx]` overrides. Common base substring regardless of index --
+`all = true`.
+"""
+old = "slot->output["
+new = "((u16 *)G2H(slot->output))["
