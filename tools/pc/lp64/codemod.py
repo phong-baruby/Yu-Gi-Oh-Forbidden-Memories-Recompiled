@@ -405,14 +405,89 @@ T14I_FILES = [
     "game/script_op_save_prompt.c",
 ]
 
-CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES
+# T1.4j: chunk 5/5 (last chunk), same reasoning as T14F_FILES above --
+# alphabetical slice measured in m1-codemod-stage2f.md, boundaries
+# re-verified before this batch. After this chunk, every src/game/*.c file
+# is covered by CODE_GLOBS except src/overlays (deferred to M3).
+T14J_FILES = [
+    "game/script_op_show_dialog.c",
+    "game/script_op_show_menu.c",
+    "game/script_readers.c",
+    "game/script_run_tick.c",
+    "game/script_stream_commands.c",
+    "game/sd_arm_busy_callback.c",
+    "game/sd_calc_spatial_volume_pan.c",
+    "game/sd_has_queued_stream_command.c",
+    "game/sd_init_state.c",
+    "game/sd_init_voice_state.c",
+    "game/sd_queue_value_link_transfer.c",
+    "game/sd_read_sequence_event.c",
+    "game/sd_se_set_volume.c",
+    "game/sd_sequence_tracks.c",
+    "game/sorted_entry_relink.c",
+    "game/sound_buffer_init.c",
+    "game/sound_effect_request.c",
+    "game/sound_effect_voices.c",
+    "game/sound_find_midi_track_chunk.c",
+    "game/sound_frontend.c",
+    "game/sound_init.c",
+    "game/sound_mix.c",
+    "game/sound_output.c",
+    "game/sound_output_state.c",
+    "game/sound_output_transition.c",
+    "game/sound_pending_entries.c",
+    "game/sound_runtime.c",
+    "game/sound_secondary_commands.c",
+    "game/sound_secondary_object_selection.c",
+    "game/sound_secondary_playback.c",
+    "game/sound_secondary_reset.c",
+    "game/sound_sequence_parser.c",
+    "game/sound_sequence_runtime.c",
+    "game/sound_sequence_state.c",
+    "game/sound_sequence_timing.c",
+    "game/sound_spatialization.c",
+    "game/sound_spatialize_object.c",
+    "game/sound_state_control.c",
+    "game/sound_transfer_lifecycle.c",
+    "game/sound_voice_data.c",
+    "game/sound_voice_envelope.c",
+    "game/sound_voice_selection.c",
+    "game/sound_voice_setup.c",
+    "game/sound_voice_volume.c",
+    "game/text_box_build_step.c",
+    "game/text_box_layout_helpers.c",
+    "game/text_box_lifecycle.c",
+    "game/text_box_runtime.c",
+    "game/text_box_set_rect.c",
+    "game/text_box_state_callbacks.c",
+    "game/text_box_wrap_line.c",
+    "game/text_control_commands.c",
+    "game/text_encode_decimal_digits.c",
+    "game/text_extend_glyph_code.c",
+    "game/text_init_decimal_digit_glyph_map.c",
+    "game/text_lookup_string.c",
+    "game/text_render_state.c",
+    "game/text_sjis_to_glyph_codes.c",
+    "game/text_start_campaign_duel.c",
+    "game/text_stream_commands.c",
+    "game/text_stream_read_byte.c",
+    "game/text_stream_read_le.c",
+    "game/text_try_complete_choice_layout.c",
+    "game/triangle_subdivision.c",
+    "game/util_compare_s16.c",
+    "game/util_memory.c",
+    "game/view_state_orbit.c",
+    "game/widget_update_pulse_colour.c",
+]
+
+CODE_GLOBS = ["psyq/*.c", "game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES + T14J_FILES
 
 # src/game/*.c, forbidden to hand-edit, is the only CODE_GLOBS entry that
 # additionally gets transform_c_expressions (ADR-05 (2)/(4) on real code, not
 # just literal substitutions). src/psyq/*.c's one file needed nothing past
 # overrides.toml (T1.4a); src/overlays/*.c will likely need this too once a
 # batch reaches it.
-EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES
+EXPR_GLOBS = ["game/ai_*.c", "game/func_800[0-3]*.c", "game/func_800[4-9]*.c"] + T14F_FILES + T14G_FILES + T14H_FILES + T14I_FILES + T14J_FILES
 
 # Psyq headers reach one another with <angled> includes in the SDK's own
 # order; one that fails alone is retried with this prelude, as

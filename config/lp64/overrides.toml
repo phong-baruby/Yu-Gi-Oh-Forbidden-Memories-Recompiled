@@ -992,3 +992,302 @@ the retail array idiom -- same class as T1.4g/h/i's `entries[i]`/`org[idx]`/
 """
 old = "slot->output["
 new = "((u16 *)G2H(slot->output))["
+
+[[override]]
+file = "game/sd_init_voice_state.c"
+pattern = "gaddr-field-pointer-used-as-array"
+reason = """
+`r->field_043C[i] = SD_PENDING_ENTRY_NONE;` (sd_init_voice_state.c:64): field_043C
+(GPTR(u16), a scalar pointer field, sound.h) used with the retail array idiom --
+same class as T1.4g-i's `entries[i]`/`org[idx]`/`field_DD8[idx]`/`output[N]`
+overrides. First of many sites of this exact field across the T1.4j sound
+subsystem files, each under a different local base-variable name.
+"""
+old = "r->field_043C[i] = SD_PENDING_ENTRY_NONE;"
+new = "((u16 *)G2H(r->field_043C))[i] = SD_PENDING_ENTRY_NONE;"
+
+[[override]]
+file = "game/sd_se_set_volume.c"
+pattern = "gaddr-field-pointer-used-as-array"
+reason = "Same hazard/class as sd_init_voice_state.c's field_043C override above, variable `a` instead of `r`. sd_se_set_volume.c:39."
+old = "id = a->field_043C[v];"
+new = "id = ((u16 *)G2H(a->field_043C))[v];"
+
+[[override]]
+file = "game/sound_effect_voices.c"
+pattern = "gaddr-field-pointer-used-as-array-043C"
+reason = "Same field_043C hazard/class, base variable g_SDValue this time. sound_effect_voices.c:43."
+old = "idx = g_SDValue->field_043C[id];"
+new = "idx = ((u16 *)G2H(g_SDValue->field_043C))[id];"
+
+[[override]]
+file = "game/sound_effect_voices.c"
+pattern = "gaddr-field-pointer-used-as-array-0444"
+all = true
+reason = """
+field_0444 (GPTR(SDNote), a scalar pointer field, sound.h) used with the same
+array idiom as field_043C above, base g_SDValue -- substring common to all 5
+sites in this file regardless of what member access follows -- `all = true`.
+sound_effect_voices.c:45,46,55,57,67.
+"""
+old = "g_SDValue->field_0444[idx]"
+new = "((SDNote *)G2H(g_SDValue->field_0444))[idx]"
+
+[[override]]
+file = "game/sound_find_midi_track_chunk.c"
+pattern = "gaddr-field-bare-arithmetic-call-argument"
+reason = """
+`SD_CompareBytes(D_8009AF80, D_8009B458->field_07DC + offset,
+SD_SEQUENCE_MARKER_SIZE)`: field_07DC (GPTR(u8), scalar, sound.h) used as a
+bare `+` operand, the sum then passed as a call argument expecting a real
+`u8 *` -- transform_c_expressions's CALL_EXPR-argument case only fires when
+the gaddr field ITSELF is the argument, not when it is first combined with an
+arithmetic operator (same "bare arithmetic operand" ambiguity class as
+T1.4f/i's `+` overrides, ADR-05 (4)); falls through to the "plain integer
+arithmetic, no edit" catch-all, silently wrong. Confirmed real host-pointer
+arithmetic needed by the callee's own signature (`u8 *` parameter).
+"""
+old = "D_8009B458->field_07DC + offset"
+new = "(u8 *)G2H(D_8009B458->field_07DC) + offset"
+
+[[override]]
+file = "game/sound_pending_entries.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-a1"
+reason = "Same field_043C hazard/class as sd_init_voice_state.c's override, base variable a1. sound_pending_entries.c:18."
+old = "a1->field_043C[i] = SD_PENDING_ENTRY_NONE;"
+new = "((u16 *)G2H(a1->field_043C))[i] = SD_PENDING_ENTRY_NONE;"
+
+[[override]]
+file = "game/sound_pending_entries.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-write"
+reason = "Same field_043C hazard/class, base g_SDValue, a write instead of a read. sound_pending_entries.c:36."
+old = "g_SDValue->field_043C[input->keys[i]] = g_SDValue->field_0440;"
+new = "((u16 *)G2H(g_SDValue->field_043C))[input->keys[i]] = g_SDValue->field_0440;"
+
+[[override]]
+file = "game/sound_pending_entries.c"
+pattern = "gaddr-field-pointer-used-as-array-0444-struct-copy"
+reason = """
+Same field_0444 hazard/class as sound_effect_voices.c's override, a whole-
+struct copy into the array element instead of a scalar member read/write --
+`G2H` the base, subscript the resolved real pointer, then the struct
+assignment itself needs no further translation (SDNote has no gaddr fields
+of its own). sound_pending_entries.c:37.
+"""
+old = "g_SDValue->field_0444[g_SDValue->field_0440] = input->data[i];"
+new = "((SDNote *)G2H(g_SDValue->field_0444))[g_SDValue->field_0440] = input->data[i];"
+
+[[override]]
+file = "game/sound_pending_entries.c"
+pattern = "gaddr-field-pointer-used-as-array-0444-compound-assign"
+reason = "Same field_0444 hazard/class as the override above, a compound `+=` on a member of the array element instead of a whole-struct copy. sound_pending_entries.c:38."
+old = "g_SDValue->field_0444[g_SDValue->field_0440].field_0006 +="
+new = "((SDNote *)G2H(g_SDValue->field_0444))[g_SDValue->field_0440].field_0006 +="
+
+[[override]]
+file = "game/sound_sequence_runtime.c"
+pattern = "gaddr-field-pointer-used-as-array"
+reason = """
+`int value = state->field_07DC[offset];` (sound_sequence_runtime.c:69):
+field_07DC (GPTR(u8), scalar, SDSecondaryState, sound.h) used with the retail
+array idiom -- same class as the overrides above.
+"""
+old = "state->field_07DC[offset]"
+new = "((u8 *)G2H(state->field_07DC))[offset]"
+
+[[override]]
+file = "game/sound_voice_selection.c"
+pattern = "gaddr-field-array-element-chain-read"
+reason = """
+`state->field_0448[index].field_0004` (sound_voice_selection.c:129):
+field_0448 (GPTR(SDValueLink), scalar, sound.h) subscripted then chained with
+`.field_0004` -- same "subscript used as chain base" gap as T1.4i's
+`field_1E0[i]->start` overrides, on a scalar field instead of a true array.
+"""
+old = "state->field_0448[index]"
+new = "((SDValueLink *)G2H(state->field_0448))[index]"
+
+[[override]]
+file = "game/text_stream_read_byte.c"
+pattern = "gaddr-field-array-element-deref-postinc"
+reason = """
+`return *object->streams[object->stream_index]++;`: same class as T1.4g's
+duel_effect_command.c override (see its reason) -- streams (GPTR(u8)
+streams[N], TextStreamOwner) indexed then dereferenced through a postfix
+`++`. Simpler here: `object` is a plain typed parameter (TextStreamOwner *),
+no macro involved. text_stream_read_byte.c:6.
+"""
+old = "return *object->streams[object->stream_index]++;"
+new = "return *(u8 *)G2H(object->streams[object->stream_index]++);"
+
+[[override]]
+file = "game/sd_queue_value_link_transfer.c"
+pattern = "gaddr-field-bare-arithmetic-then-cast"
+reason = """
+`entry = (SDValueLink *)(off + (s32)a->field_0448);` (sd_queue_value_link_transfer.c:25):
+field_0448 (GPTR(SDValueLink), scalar, sound.h) read as a bare arithmetic
+operand (`(s32)a->field_0448` is a no-op reinterpretation, gaddr already IS
+s32-sized) then the SUM cast directly to a real pointer type without G2H --
+same "compute a guest address, then forgot to G2H the final cast" gap as
+T1.4i's duel_init_model_scene.c-adjacent cases, just reached via `+` instead
+of array subscript. Confirmed real host-pointer deref needed immediately
+after (`entry->sector_offset`).
+"""
+old = "entry = (SDValueLink *)(off + (s32)a->field_0448);"
+new = "entry = (SDValueLink *)G2H(off + (s32)a->field_0448);"
+
+[[override]]
+file = "game/sd_queue_value_link_transfer.c"
+pattern = "gaddr-field-bare-arithmetic-then-cast-via-local"
+reason = """
+Same hazard/class as the override above, reached through a local variable
+instead of inline: `off += (s32)c->field_0448;` leaves `off` holding a
+guest-address value (gaddr arithmetic, correctly left untouched -- field on
+both sides of a plain `+=`, no cast involved there); the cast that actually
+needs G2H is the next statement, `entry = (SDValueLink *)off;`.
+sd_queue_value_link_transfer.c:35-36.
+"""
+old = "entry = (SDValueLink *)off;"
+new = "entry = (SDValueLink *)G2H(off);"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-a"
+reason = "Same field_043C hazard/class as sd_init_voice_state.c's override, base variable a. sound_effect_request.c:63."
+old = "n = a->field_043C[v];"
+new = "n = ((u16 *)G2H(a->field_043C))[v];"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-bare-arithmetic-then-cast-a"
+reason = """
+`e = (u8 *)(n * 8 + (u32)a->field_0444);`: field_0444 (GPTR(SDNote), scalar,
+sound.h) read as a bare arithmetic operand (no-op reinterpret, gaddr already
+u32-sized) then the sum cast directly to a real pointer without G2H -- same
+class as sd_queue_value_link_transfer.c's override above. sound_effect_request.c:67.
+"""
+old = "e = (u8 *)(n * 8 + (u32)a->field_0444);"
+new = "e = (u8 *)G2H(n * 8 + (u32)a->field_0444);"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-b"
+reason = "Same field_043C hazard/class as the overrides above, base variable b, different index expression. sound_effect_request.c:75."
+old = "n = b->field_043C[tags.words.copy & 0xFFFF];"
+new = "n = ((u16 *)G2H(b->field_043C))[tags.words.copy & 0xFFFF];"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-bare-arithmetic-then-cast-b"
+reason = "Same hazard/class as this file's own `a->field_0444` override above, base variable b. sound_effect_request.c:79."
+old = "e = (u8 *)(n * 8 + (u32)b->field_0444);"
+new = "e = (u8 *)G2H(n * 8 + (u32)b->field_0444);"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-cast-base"
+reason = "Same field_043C hazard/class as the overrides above, base expression is a cast ((SDValue *)base) instead of a plain variable. sound_effect_request.c:124."
+old = "key = ((SDValue *)base)->field_043C[pt];"
+new = "key = ((u16 *)G2H(((SDValue *)base)->field_043C))[pt];"
+
+[[override]]
+file = "game/sound_effect_request.c"
+pattern = "gaddr-field-array-element-chain-read-volume"
+all = true
+reason = """
+`prod = g_SDValue->field_0444[v].volume;`: field_0444 subscripted then
+chained with `.volume` -- same "subscript used as chain base" gap as
+sound_voice_selection.c's override above. Appears identically twice in this
+file (:144,149) -- `all = true`.
+"""
+old = "prod = g_SDValue->field_0444[v].volume;"
+new = "prod = ((SDNote *)G2H(g_SDValue->field_0444))[v].volume;"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-pointer-used-as-array-043C"
+reason = "Same field_043C hazard/class as the overrides above, base variable a. sound_voice_data.c:62."
+old = "id = a->field_043C[v];"
+new = "id = ((u16 *)G2H(a->field_043C))[v];"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-array-element-chain-read-volume-c"
+reason = "Same field_0444 subscript-then-chain hazard/class as sound_effect_request.c's `.volume` override, base variable c. sound_voice_data.c:90."
+old = "v = c->field_0444[vid].volume;"
+new = "v = ((SDNote *)G2H(c->field_0444))[vid].volume;"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-array-element-chain-read-volume-d"
+reason = "Same hazard/class as the override above, base variable d. sound_voice_data.c:98."
+old = "v = d->field_0444[vid].volume;"
+new = "v = ((SDNote *)G2H(d->field_0444))[vid].volume;"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-literal-address-cast-blk"
+reason = """
+`blk = (SDSeqBlock *)(0x801E7800 + (side << SD_PENDING_INPUT_BLOCK_SHIFT));`:
+no gaddr FIELD involved at all here -- 0x801E7800 is a bare guest-address
+literal constant (PS1 KSEG0 range), so transform_c_expressions's field-
+scanning mechanism has nothing to anchor on; the whole expression still needs
+G2H before the cast to a real pointer, same as any other guest-address
+arithmetic. sound_voice_data.c:163.
+"""
+old = "blk = (SDSeqBlock *)(0x801E7800 + (side << SD_PENDING_INPUT_BLOCK_SHIFT));"
+new = "blk = (SDSeqBlock *)G2H(0x801E7800 + (side << SD_PENDING_INPUT_BLOCK_SHIFT));"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-literal-address-cast-other"
+reason = "Same hazard/class as the blk override above, the paired `other` computation (rev instead of side). sound_voice_data.c:164."
+old = "other = (SDSeqBlock *)(0x801E7800 + (rev << SD_PENDING_INPUT_BLOCK_SHIFT));"
+new = "other = (SDSeqBlock *)G2H(0x801E7800 + (rev << SD_PENDING_INPUT_BLOCK_SHIFT));"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-pointer-used-as-array-043C-write"
+reason = "Same field_043C hazard/class as the overrides above, a write this time, base g_SDValue. sound_voice_data.c:179."
+old = "g_SDValue->field_043C[key] = n;"
+new = "((u16 *)G2H(g_SDValue->field_043C))[key] = n;"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-pointer-used-as-array-0444-struct-copy"
+reason = "Same field_0444 whole-struct-copy hazard/class as sound_pending_entries.c's override above, base g_SDValue. sound_voice_data.c:180."
+old = "g_SDValue->field_0444[n] = cur->data[j];"
+new = "((SDNote *)G2H(g_SDValue->field_0444))[n] = cur->data[j];"
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-offsetof-plus-field-then-cast"
+reason = """
+`e = (SDNote *)((u32)&((SDNote *)0)[n] + (u32)g_SDValue->field_0444);`:
+offsetof-via-NULL idiom (ADR-05 item 9, already `(uintptr_t)`-fixed by
+fix_offsetof_casts on the `&(...)[n]` part) summed with field_0444 (bare
+arithmetic operand, no-op reinterpret) then cast directly to a real pointer
+without G2H -- same "forgot the final G2H" class as this file's own
+blk/other overrides above. sound_voice_data.c:181-184.
+"""
+old = """                e = (SDNote *)(
+                    (u32)(uintptr_t)&((SDNote *)0)[n] +
+                    (u32)g_SDValue->field_0444
+                );"""
+new = """                e = (SDNote *)G2H(
+                    (u32)(uintptr_t)&((SDNote *)0)[n] +
+                    (u32)g_SDValue->field_0444
+                );"""
+
+[[override]]
+file = "game/sound_voice_data.c"
+pattern = "gaddr-field-pointer-used-as-array-music-track"
+all = true
+reason = """
+music_track (GPTR(u16), scalar, sound.h) used with the retail array idiom,
+plain and through `*(s32 *)&...[N]` reinterpretation -- same class as the
+other scalar-pointer-as-array overrides in this file, a different field.
+Common base substring across all 5 sites (:237-241) -- `all = true`.
+"""
+old = "c->music_track["
+new = "((u16 *)G2H(c->music_track))["
