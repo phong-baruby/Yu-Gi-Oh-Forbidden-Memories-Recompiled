@@ -80,7 +80,7 @@ second (text-splicing runs back-to-front) slices into text the first edit
 already rewrote, corrupting both. Consecutive fields sharing one extent
 start are therefore grouped and edited as a unit (group_replacement below),
 never one declarator at a time."""
-import argparse, glob, os, re, subprocess, sys, tomllib
+import argparse, glob, json, os, re, subprocess, sys, tomllib
 import clang.cindex as cindex
 
 INLINE_FN_PTR_MARKER = b"/* lp64: inline fn ptr */"
@@ -744,8 +744,8 @@ def group_replacement(members, data, start, end):
             f"#endif").encode("utf-8")
 
 
-def transform_bytes(data, tu, filename):
-    edits = []
+def transform_bytes(data, tu, filename, globals_map=None):
+    edits = list(collect_global_edits(data, tu, filename, globals_map)) if globals_map else []
     seen_records = set()
     # walk_preorder, not get_children(): a struct/union nested inside another
     # one's body (common for an anonymous sub-struct field, e.g. mcgui.h's
@@ -792,6 +792,90 @@ def transform_bytes(data, tu, filename):
     for start, end, replacement in sorted(edits, reverse=True):
         out = out[:start] + replacement + out[end:]
     return out, len(edits)
+
+
+def load_globals(path):
+    """name -> {address, is_array, pointee, array_size} for every
+    "pointer"/"pointer-array" global tools/pc/lp64/gen_globals.py measured
+    (its `canonical` section -- T1.5 stage 1, docs/macos/reports/
+    m1-globals-stage1.md). [] (not {}; callers only ever iterate items())
+    if the census has not been generated yet, so this tool stays usable
+    without it, same spirit as load_overrides's missing-file fallback."""
+    if not os.path.exists(path):
+        return {}
+    with open(path) as handle:
+        return json.load(handle)["canonical"]
+
+
+def global_wrapper_text(name, info, original):
+    """The `#ifdef MEMORIES_LP64 ... #else <original> #endif` replacement
+    for one global variable declaration (ADR-03): a one-field struct
+    wrapping a `gaddr`/`gaddr[N]` "value" member, so every use of `name`
+    reaches that member through an ordinary MEMBER_REF_EXPR (`.value`) --
+    the exact AST shape transform_c_expressions already classifies for a
+    GPTR struct field, reused here completely unmodified (verified by
+    prototype against ordering_tables.h's D_800E9D90, see
+    docs/macos/reports/m1-globals-stage1.md: dereferencing straight to the
+    retail pointer type left `sizeof` wrong -- LP64's real pointers are
+    twice retail's 4-byte slot; dereferencing to `gaddr` through a named
+    field is both the right size and, for free, the right classification
+    behavior). `original` is kept verbatim in the #else branch, byte for
+    byte, so the non-LP64 build is untouched.
+
+    The member is written as `GPTR(pointee) value;`, not pre-expanded to
+    `gaddr value;` -- field_pointee's own text-regex pointee-type recovery
+    (used by transform_c_expressions whenever a dereference/chain needs to
+    know what real pointer type to cast back to) reads this exact
+    declaration's SOURCE TEXT for a literal `GPTR(T)`/`GPTR_FN(T)` call, the
+    same convention every other GPTR struct field in this codebase follows
+    (T1.3) -- writing the already-macro-expanded `gaddr` here directly would
+    erase T before that lookup ever runs, the same information loss GPTR(T)
+    itself exists to avoid everywhere else."""
+    if info["is_array"]:
+        size_text = f"[{info['array_size']}]" if info["array_size"] is not None else "[]"
+        member = f"GPTR({info['pointee']}) value{size_text};"
+    else:
+        member = f"GPTR({info['pointee']}) value;"
+    struct_name = f"{name}_global_t"
+    return (f"#ifdef MEMORIES_LP64\n"
+            f"typedef struct {{ {member} }} {struct_name};\n"
+            f"#define {name} (*({struct_name} *)G2H(0x{info['address']:08X}u)).value\n"
+            f"#else\n"
+            f"{original}\n"
+            f"#endif").encode("utf-8")
+
+
+def collect_global_edits(data, tu, filename, globals_map):
+    """(start, end, replacement) edits for every top-level VAR_DECL in
+    `filename` whose name is one of globals_map's known ADR-03
+    pointer/pointer-array globals -- declared `extern`, tentative, or with
+    a real initializer, all three uniformly (the initializer, if any,
+    becomes dead: under LP64 this global has no real storage of its own
+    left to initialize, and its retail value already lives in guest RAM
+    from the PS-X EXE's own load, docs/macos/reports/m1-globals-stage1.md).
+    Not yet spliced into `data`: transform_file merges these with
+    transform_bytes's own struct-field edits (both read from the same `tu`
+    over the same original `data`, so splicing either set first would shift
+    the other's offsets) into one combined splice; transform_code_file (no
+    struct fields of its own to merge with) splices this result alone.
+    get_children(), not walk_preorder(): a global is by definition never
+    nested inside another declaration, so only true top-level cursors are
+    ever candidates, same reasoning as gen_globals.py's own scan."""
+    edits = []
+    for cursor in tu.cursor.get_children():
+        if cursor.kind != cindex.CursorKind.VAR_DECL:
+            continue
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        info = globals_map.get(cursor.spelling)
+        if info is None:
+            continue
+        start, end = cursor.extent.start.offset, cursor.extent.end.offset
+        if end < len(data) and data[end:end + 1] == b";":
+            end += 1
+        original = data[start:end].decode("utf-8")
+        edits.append((start, end, global_wrapper_text(cursor.spelling, info, original)))
+    return edits
 
 
 MACH_O_SECTION_RE = re.compile(rb'__attribute__\(\(section\("([^",]*)"\)\)\)')
@@ -969,7 +1053,7 @@ def wraps_dereference(node, data):
     type>" whose own extent is still the real `*...` source text -- checked
     here the only way left available, by its first byte."""
     if node.kind == cindex.CursorKind.UNARY_OPERATOR:
-        return unary_operator(node) == "*"
+        return unary_operator(node, data) == "*"
     if node.kind == cindex.CursorKind.UNEXPOSED_EXPR:
         return data[node.extent.start.offset:node.extent.start.offset + 1] == b"*"
     return False
@@ -984,36 +1068,39 @@ def already_translated(cursor, parent_map):
     return node is not None and node.kind == cindex.CursorKind.CALL_EXPR and node.spelling in TRANSLATE_CALLS
 
 
-def binop_operator(cursor):
+def binop_operator(cursor, data):
     """The operator token of a BINARY_OPERATOR/COMPOUND_ASSIGNMENT_OPERATOR
-    cursor -- libclang's Cursor has no direct accessor for this, only the
-    token lying between the LHS's and RHS's extents."""
+    cursor -- libclang's Cursor has no direct accessor for this. Read
+    straight from `data` between the LHS's and RHS's extents (C grammar
+    guarantees nothing else sits there) rather than `cursor.get_tokens()`:
+    that call silently returns zero tokens whenever the cursor's range
+    crosses a macro expansion boundary -- exactly what every use of a T1.5
+    ADR-03 global does (it is itself an object-like macro) -- which made
+    this return None for every `global = rhs` found while compile-sweeping
+    T1.5 phiên 2 (`x.f = rhs` for an ordinary struct field never crosses a
+    macro boundary here, which is why this bug never showed up in T1.3/T1.4)."""
     children = list(cursor.get_children())
     if len(children) != 2:
         return None
     lhs, rhs = children
-    for tok in cursor.get_tokens():
-        if tok.extent.start.offset >= lhs.extent.end.offset and tok.extent.end.offset <= rhs.extent.start.offset:
-            return tok.spelling
-    return None
+    return data[lhs.extent.end.offset:rhs.extent.start.offset].decode("utf-8").strip()
 
 
-def unary_operator(cursor):
+def unary_operator(cursor, data):
     """The operator token of a UNARY_OPERATOR cursor, prefix or postfix --
-    same "libclang does not expose this directly" situation as
-    binop_operator, distinguished here by whether the operand's extent
-    starts where the whole expression's extent does (postfix: operand first)
-    or not (prefix: operator first)."""
+    same fix as binop_operator (text between the operand's extent and the
+    whole cursor's extent, not `cursor.get_tokens()`), distinguished here by
+    whether the operand's extent starts where the whole expression's extent
+    does (postfix: operand first) or not (prefix: operator first)."""
     children = list(cursor.get_children())
     if len(children) != 1:
         return None
     operand = children[0]
-    toks = list(cursor.get_tokens())
-    if not toks:
-        return None
-    if cursor.extent.start.offset == operand.extent.start.offset:
-        return toks[-1].spelling  # postfix
-    return toks[0].spelling  # prefix
+    cstart, cend = cursor.extent.start.offset, cursor.extent.end.offset
+    ostart, oend = operand.extent.start.offset, operand.extent.end.offset
+    if cstart == ostart:
+        return data[oend:cend].decode("utf-8").strip()  # postfix
+    return data[cstart:ostart].decode("utf-8").strip()  # prefix
 
 
 def is_assign_lhs(assign_cursor, member_cursor):
@@ -1197,14 +1284,14 @@ def transform_c_expressions(data, tu, filename):
             continue
 
         if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
-                and is_assign_lhs(parent, cursor) and binop_operator(parent) == "=":
+                and is_assign_lhs(parent, cursor) and binop_operator(parent, data) == "=":
             edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data, context)
             if edit is not None:
                 edits.append(edit)
             continue
 
         if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
-                and binop_operator(parent) == "=" and not is_assign_lhs(parent, cursor):
+                and binop_operator(parent, data) == "=" and not is_assign_lhs(parent, cursor):
             # `realPtr = x.f;`: x.f read directly as the whole RHS of a plain
             # assignment (not a declaration's initializer -- VAR_DECL's case
             # above -- and not nested inside a cast/call/deref -- those cases
@@ -1253,7 +1340,7 @@ def transform_c_expressions(data, tu, filename):
             continue
 
         if parent is not None and parent.kind == cindex.CursorKind.UNARY_OPERATOR:
-            op = unary_operator(parent)
+            op = unary_operator(parent, data)
             if op in ("++", "--"):
                 raw_grandparent = parent_map.get(parent.hash)
                 if raw_grandparent is not None and wraps_dereference(raw_grandparent, data):
@@ -1279,7 +1366,7 @@ def transform_c_expressions(data, tu, filename):
             pstart, pend = parent.extent.start.offset, parent.extent.end.offset
             grandparent = skip_transparent(parent, parent_map)
             if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
-                    and binop_operator(grandparent) == "=" and is_assign_lhs(grandparent, parent):
+                    and binop_operator(grandparent, data) == "=" and is_assign_lhs(grandparent, parent):
                 edit = classify_write(unwrap_transparent(list(grandparent.get_children())[1]), data, context)
                 if edit is not None:
                     edits.append(edit)
@@ -1289,7 +1376,7 @@ def transform_c_expressions(data, tu, filename):
                     edits.append((pstart, pend, f"({grandparent.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
                 continue
             if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
-                    and binop_operator(grandparent) == "=" and not is_assign_lhs(grandparent, parent):
+                    and binop_operator(grandparent, data) == "=" and not is_assign_lhs(grandparent, parent):
                 lhs = list(grandparent.get_children())[0]
                 if lhs.type.kind == cindex.TypeKind.POINTER:
                     edits.append((pstart, pend, f"({lhs.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
@@ -1337,15 +1424,33 @@ def transform_c_expressions(data, tu, filename):
     return out, len(edits)
 
 
-def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, expr_pass):
+def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, expr_pass, globals_map=None):
     """A *.c file's codemod output: config/lp64/overrides.toml's literal
     substitutions, then (only for files under EXPR_GLOBS) transform_c_expressions
     on the result. Writes to out_path before the expression pass parses it
     (not the original path): that pass needs MEMORIES_LP64 and the file's own
     relative #includes resolved against the already-transformed tree, both of
-    which only work from out_path's location under out_dir."""
+    which only work from out_path's location under out_dir.
+
+    A *.c file redeclares plenty of ADR-03 globals directly (no shared
+    header), same as it would any other `extern`, so this needs its own
+    global-declaration pass too, same as transform_file's for headers --
+    done first, on a plain (non-LP64) parse of the ORIGINAL text, because
+    the global's pointer-ness that decides its wrapper shape is a retail
+    fact, not an LP64 one (same reasoning as gen_globals.py's own scan);
+    only after that rewrite does the *rest* of this function's pipeline,
+    down to transform_c_expressions, ever see MEMORIES_LP64 defined, which
+    is what lets that unmodified pass already classify the new wrapper's
+    `.value` member exactly as it would any GPTR struct field (verified by
+    prototype, docs/macos/reports/m1-globals-stage1.md)."""
     with open(path, "rb") as handle:
         data = handle.read()
+    if globals_map:
+        tu = parse(path, in_dir)
+        if tu is not None:
+            for start, end, replacement in sorted(
+                    collect_global_edits(data, tu, os.path.basename(path), globals_map), reverse=True):
+                data = data[:start] + replacement + data[end:]
     data = fix_mach_o_sections(data)
     data = fix_offsetof_casts(data)
     data = apply_overrides(data, relpath, overrides)
@@ -1363,13 +1468,13 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
     return count
 
 
-def transform_file(path, out_path, include_dir, relpath, overrides):
+def transform_file(path, out_path, include_dir, relpath, overrides, globals_map=None):
     with open(path, "rb") as handle:
         data = handle.read()
     tu = parse(path, include_dir)
     if tu is None:
         sys.exit(f"{path}: could not parse (even with the psyq prelude)")
-    out_data, count = transform_bytes(data, tu, os.path.basename(path))
+    out_data, count = transform_bytes(data, tu, os.path.basename(path), globals_map)
     out_data = fix_mach_o_sections(out_data)
     out_data = fix_offsetof_casts(out_data)
     out_data = apply_overrides(out_data, relpath, overrides)
@@ -1386,6 +1491,9 @@ def main():
     parser.add_argument("--out", default="tmp/lp64/src", help="output tree to write to")
     parser.add_argument("--overrides", default="config/lp64/overrides.toml",
                         help="ADR-05 override file (literal substitutions for *.c, see CODE_GLOBS)")
+    parser.add_argument("--globals", default="tmp/lp64/gen/globals_census.json",
+                        help="T1.5/ADR-03 census (tools/pc/lp64/gen_globals.py); "
+                             "no global codemod runs if this file does not exist")
     parser.add_argument("headers", nargs="*",
                         help="headers under --in-dir to transform (default: every header "
                              "under src/*.h, src/game, src/overlays, src/psyq, plus every "
@@ -1413,6 +1521,7 @@ def main():
         )
 
     overrides = load_overrides(options.overrides)
+    globals_map = load_globals(options.globals)
 
     total_fields, total_files = 0, 0
     for header in relative:
@@ -1420,7 +1529,7 @@ def main():
         dst = os.path.join(options.out, header)
         if not os.path.exists(src):
             sys.exit(f"{src}: not found")
-        count = transform_file(src, dst, options.in_dir, header, overrides)
+        count = transform_file(src, dst, options.in_dir, header, overrides, globals_map)
         if count:
             total_files += 1
         total_fields += count
@@ -1435,7 +1544,7 @@ def main():
             if not os.path.exists(src):
                 sys.exit(f"{src}: not found")
             total_expr += transform_code_file(src, dst, relpath, overrides, options.out,
-                                              options.in_dir, relpath in expr_relative)
+                                              options.in_dir, relpath in expr_relative, globals_map)
         print(f"{len(code_relative)} *.c file(s) processed, {total_expr} expression(s) transformed")
 
 

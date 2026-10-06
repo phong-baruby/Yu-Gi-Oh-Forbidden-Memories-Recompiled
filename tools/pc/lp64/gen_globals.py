@@ -76,21 +76,30 @@ def load_guest_addresses(path):
 
 
 def type_shape(field_type):
-    """(shape, canonical_spelling) for a VAR_DECL's type: "pointer",
-    "pointer-array", "struct-with-pointer", or "plain". Mirrors
-    codemod.py's field_shape/is_gaddr_type reasoning but at file scope: an
-    array of pointers is the ordering_tables.h shape (GsOT *D_800E9D90[4]);
-    a direct pointer covers scalars (u8 *D_8015C424 is itself declared as
-    an array `u8 D_8015C424[]` in that case, not a pointer -- see its own
-    entry, "plain" is correct for it: an array of plain bytes, no pointer)."""
+    """(shape, canonical_spelling, pointee_spelling, array_size) for a
+    VAR_DECL's type: "pointer", "pointer-array", "struct-with-pointer", or
+    "plain". Mirrors codemod.py's field_shape/is_gaddr_type reasoning but at
+    file scope: an array of pointers is the ordering_tables.h shape
+    (GsOT *D_800E9D90[4]); a direct pointer covers scalars (u8 *D_8015C424
+    is itself declared as an array `u8 D_8015C424[]` in that case, not a
+    pointer -- see its own entry, "plain" is correct for it: an array of
+    plain bytes, no pointer). pointee_spelling/array_size are only
+    meaningful for "pointer"/"pointer-array" (the shapes gen_globals.py's
+    codemod companion needs to emit a `gaddr`/`gaddr[N]` wrapper for);
+    array_size is None for a scalar pointer or an incomplete array (`T *[]`,
+    size not stated at this declaration -- the caller picks a canonical
+    size across every declaration of the same name)."""
     canonical = field_type.get_canonical()
     if canonical.kind == cindex.TypeKind.POINTER:
-        return "pointer", canonical.spelling
+        pointee = canonical.get_pointee()
+        return "pointer", canonical.spelling, pointee.spelling, None
     if canonical.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY):
-        element = canonical.get_array_element_type().get_canonical()
-        if element.kind == cindex.TypeKind.POINTER:
-            return "pointer-array", canonical.spelling
-        return "plain", canonical.spelling
+        element = canonical.get_array_element_type()
+        element_canonical = element.get_canonical()
+        if element_canonical.kind == cindex.TypeKind.POINTER:
+            size = canonical.get_array_size() if canonical.kind == cindex.TypeKind.CONSTANTARRAY else None
+            return "pointer-array", canonical.spelling, element_canonical.get_pointee().spelling, size
+        return "plain", canonical.spelling, None, None
     if canonical.kind == cindex.TypeKind.RECORD:
         decl = canonical.get_declaration()
         for field in decl.get_children():
@@ -98,12 +107,12 @@ def type_shape(field_type):
                 continue
             ft = field.type.get_canonical()
             if ft.kind == cindex.TypeKind.POINTER:
-                return "struct-with-pointer", canonical.spelling
+                return "struct-with-pointer", canonical.spelling, None, None
             if ft.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY) and \
                     ft.get_array_element_type().get_canonical().kind == cindex.TypeKind.POINTER:
-                return "struct-with-pointer", canonical.spelling
-        return "plain", canonical.spelling
-    return "plain", canonical.spelling
+                return "struct-with-pointer", canonical.spelling, None, None
+        return "plain", canonical.spelling, None, None
+    return "plain", canonical.spelling, None, None
 
 
 def scan_file(path, include_dir, wanted, found):
@@ -116,12 +125,14 @@ def scan_file(path, include_dir, wanted, found):
         name = cursor.spelling
         if name not in wanted:
             continue
-        shape, spelling = type_shape(cursor.type)
+        shape, spelling, pointee, array_size = type_shape(cursor.type)
         is_extern = cursor.storage_class == cindex.StorageClass.EXTERN
         found.setdefault(name, []).append({
             "file": path,
             "shape": shape,
             "type": spelling,
+            "pointee": pointee,
+            "array_size": array_size,
             "extern": is_extern,
             "definition": cursor.is_definition() and not is_extern,
         })
@@ -166,6 +177,62 @@ def main():
     has_definition = {name for name, hits in found.items() if any(h["definition"] for h in hits)}
     orphans = {name for name in wanted if name in found and name not in has_definition}
 
+    # Canonical shape for every "pointer"/"pointer-array" global: one
+    # pointee spelling (all declarations already agree, by construction --
+    # "conflicting" names were split out above) and the largest array size
+    # seen across every declaration (an incomplete `T *name[]` elsewhere is
+    # just that file not stating the count, not a different count).
+    #
+    # Excludes every name with a real C definition somewhere (not just
+    # `extern`): T1.5 phien 2's compile sweep found 20 of these among the
+    # 111 pointer/pointer-array symbols, and they split into two groups
+    # neither of which this simple gaddr-wrapper macro can handle --
+    # confirmed with fen, both deferred rather than worked around here:
+    #   - 16 are function-pointer tables (pointee is a function type, the
+    #     "apfn"-prefixed naming convention and its un-prefixed siblings --
+    #     gMain_apfnModeRunner, gAiScript_apfnCommand, ...): calling through
+    #     one (`gMain_apfnModeRunner[v & 0x1F]()`) needs a real native
+    #     function pointer recovered from guest storage, which is ADR-04/
+    #     T1.6's job, not yet built -- wrapping them here only produced
+    #     "called object type 'gaddr' is not a function" everywhere they are
+    #     read, both at their own definition site and every caller.
+    #   - 4 are plain data pointers (D_8009AF18, D_8009AF88, D_8009B074,
+    #     gFile_apszName) declared `extern` in one header and defined with a
+    #     real initializer in a .c file -- wrapping both declarations
+    #     produces two conflicting `NAME_global_t` typedefs in any
+    #     translation unit that sees both (the .c file includes the
+    #     header), and even with that deduplicated the real initializer
+    #     (`= &gFile_PrimaryTransferDescriptor;`) has no storage left to
+    #     write once NAME is a macro -- needs some other init-time
+    #     mechanism (e.g. a startup function writing into guest RAM) not
+    #     yet designed.
+    canonical = {}
+    for name in classified["pointer"] + classified["pointer-array"]:
+        if name in has_definition:
+            continue
+        hits = found[name]
+        pointee = hits[0]["pointee"]
+        # ADR-04/T1.6 territory regardless of whether a definition was found
+        # in CODE_GLOBS/DEFAULT_GLOBS's scan scope -- a function-typed
+        # pointee is a function-pointer table (or scalar) either way, and
+        # calling through one needs a real native function pointer recovered
+        # from guest storage, not this gaddr-wrapper macro (see the
+        # has_definition exclusion comment above for the 16 found this way
+        # by their own definition site; this catches the rest, found by
+        # T1.5 phien 2's compile sweep hitting "called object type 'gaddr'
+        # is not a function" on an orphan-only -- extern-only -- symbol like
+        # D_80090F58, never caught by the has_definition check since no
+        # definition of it exists in scanned scope at all).
+        if "(" in pointee:
+            continue
+        sizes = [h["array_size"] for h in hits if h["array_size"] is not None]
+        canonical[name] = {
+            "address": addresses[name],
+            "is_array": name in classified["pointer-array"],
+            "pointee": pointee,
+            "array_size": max(sizes) if sizes else None,
+        }
+
     print(f"guest_addresses.txt data-range candidates: {len(wanted)}")
     for shape in ("plain", "pointer", "pointer-array", "struct-with-pointer"):
         names = classified[shape]
@@ -180,6 +247,7 @@ def main():
         json.dump({
             "addresses": addresses,
             "classified": classified,
+            "canonical": canonical,
             "conflicts": conflicts,
             "orphans": sorted(orphans),
             "declarations": found,

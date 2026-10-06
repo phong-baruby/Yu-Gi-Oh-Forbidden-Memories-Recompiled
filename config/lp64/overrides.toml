@@ -1291,3 +1291,568 @@ Common base substring across all 5 sites (:237-241) -- `all = true`.
 """
 old = "c->music_track["
 new = "((u16 *)G2H(c->music_track))["
+
+[[override]]
+file = "game/display_object_brightness.c"
+pattern = "gaddr-global-via-function-like-macro-argument"
+all = true
+reason = """
+`DISPLAY_OBJECT_COLOR_BYTES(D_800EB184[0])` (`#define DISPLAY_OBJECT_COLOR_BYTES(object)
+((u8 *)&(object)->field_0C)`, this file): D_800EB184 (T1.5's ADR-03 global
+codemod, GPTR(struct DisplayObject) global array, now `.value[4]` under the
+hood) subscripted then passed as a function-like macro argument -- same
+macro-argument-degenerate-extent hazard class as every GPTR struct field
+case before it (T1.4d-j), just the first time the gaddr value reaching the
+hazard comes from a global's wrapper instead of a field.
+
+First attempt -- just G2H-wrapping the argument, `DISPLAY_OBJECT_COLOR_BYTES(G2H(D_800EB184[0]))`
+-- still hit the same degenerate extent: the hazard is not "this text
+happens to contain a gaddr access", it is "this text is substituted as a
+macro ARGUMENT at all" -- the C preprocessor macro-expands an argument's own
+tokens before splicing them into the outer macro's body, so G2H(...) around
+the *inner* value changes nothing about the *outer* splice site clang's
+location tracking already loses precision on. Fixed instead by inlining
+DISPLAY_OBJECT_COLOR_BYTES's own body by hand so `D_800EB184[0]` is a
+function-CALL (G2H, not a macro) argument, which this codebase's established
+cases already show has no such problem. Appears identically 6 times in this
+one file -- `all = true`.
+"""
+old = "DISPLAY_OBJECT_COLOR_BYTES(D_800EB184[0])"
+new = "((u8 *)&((struct DisplayObject *)G2H(D_800EB184[0]))->field_0C)"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-global-via-function-like-macro-argument"
+all = true
+reason = """
+`DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)` (`#define DUEL_EFFECT_REQUEST_VIEW(request)
+((DuelEffectRequest *)(request))`): D_8009B17C (T1.5's ADR-03 global codemod,
+GPTR(unsigned char) global, now `.value` under the hood) passed as a
+function-like macro argument -- same hazard as display_object_brightness.c's
+override above (see its reason: G2H-wrapping just the argument does not fix
+a macro-argument-splice-site problem; the macro itself has to go). Appears
+identically 3 times in this file -- `all = true`.
+"""
+old = "DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)"
+new = "((DuelEffectRequest *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/duel_card_effects.c"
+pattern = "gaddr-global-via-function-like-macro-argument-field-effect"
+reason = """
+Same hazard/class as this file's own DUEL_EFFECT_REQUEST_VIEW override above
+(see its reason), a different one-arg view macro on the same global
+(DUEL_FIELD_EFFECT_OBJECT_VIEW instead). duel_card_effects.c:511.
+"""
+old = "DUEL_FIELD_EFFECT_OBJECT_VIEW(D_8009B17C)"
+new = "((DuelFieldEffectObject *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/duel_field_display_objects.c"
+pattern = "gaddr-global-via-function-like-macro-argument-card-view-mode"
+reason = """
+`DUEL_CARD_VIEW_MODE(D_8009B1C8)` (duel_side_state.h): same hazard as this
+file's other macro-argument overrides -- under MEMORIES_PC (always defined
+in our build) the macro reduces to a real function call,
+`Cheats_CardViewMode(side)`, but D_8009B1C8 is still substituted as an
+argument to the DUEL_CARD_VIEW_MODE macro itself before that, which is
+enough to trigger the degenerate extent. Drop the macro layer and call
+Cheats_CardViewMode directly -- D_8009B1C8 is then a plain function-call
+argument, which transform_c_expressions already classifies correctly with
+no override needed (established since T1.4).
+"""
+old = "DUEL_CARD_VIEW_MODE(D_8009B1C8)"
+new = "Cheats_CardViewMode(D_8009B1C8)"
+
+[[override]]
+file = "game/duel_init_scene.c"
+pattern = "gaddr-global-via-function-like-macro-argument-card-view-mode"
+all = true
+reason = "Same as duel_field_display_objects.c's DUEL_CARD_VIEW_MODE override above; appears twice in this file."
+old = "DUEL_CARD_VIEW_MODE(D_8009B1C8)"
+new = "Cheats_CardViewMode(D_8009B1C8)"
+
+[[override]]
+file = "game/func_80018004.c"
+pattern = "gaddr-global-via-function-like-macro-argument-card-view-mode"
+all = true
+reason = "Same as duel_field_display_objects.c's DUEL_CARD_VIEW_MODE override above; appears twice in this file."
+old = "DUEL_CARD_VIEW_MODE(D_8009B1C8)"
+new = "Cheats_CardViewMode(D_8009B1C8)"
+
+[[override]]
+file = "game/duel_scene_card_placement.c"
+pattern = "gaddr-global-via-function-like-macro-argument-placement-alpha"
+all = true
+reason = """
+`PLACEMENT_ALPHA(D_8009B1C0)` (`#define PLACEMENT_ALPHA(object)
+((object)->field_20.b.field_21)`, this file): D_8009B1C0 (T1.5 ADR-03
+global, GPTR(struct DisplayObject)) passed as a function-like macro
+argument -- same macro-argument-degenerate-extent hazard as this file's
+other T1.5 overrides. Appears 5 times -- `all = true`.
+"""
+old = "PLACEMENT_ALPHA(D_8009B1C0)"
+new = "((struct DisplayObject *)G2H(D_8009B1C0))->field_20.b.field_21"
+
+[[override]]
+file = "game/duel_scene_card_placement.c"
+pattern = "gaddr-global-via-function-like-macro-argument-placement-px"
+all = true
+reason = """
+`PLACEMENT_PX(D_8009B1C0)` (`#define PLACEMENT_PX(object)
+((object)->field_30.h.field_30)`): same hazard/global as PLACEMENT_ALPHA
+above. Appears 2 times -- `all = true`.
+"""
+old = "PLACEMENT_PX(D_8009B1C0)"
+new = "((struct DisplayObject *)G2H(D_8009B1C0))->field_30.h.field_30"
+
+[[override]]
+file = "game/func_80018FEC.c"
+pattern = "gaddr-global-via-function-like-macro-argument-display-object-view-1"
+reason = """
+`DISPLAY_OBJECT_VIEW(D_8009B214)` (`#define DISPLAY_OBJECT_VIEW(object)
+((DisplayObject *)(object))`): D_8009B214 (T1.5 ADR-03 global,
+GPTR(struct DisplayObject)) passed as a function-like macro argument --
+same hazard class as every other macro-argument override in this batch.
+"""
+old = "DISPLAY_OBJECT_VIEW(D_8009B214)"
+new = "((DisplayObject *)G2H(D_8009B214))"
+
+[[override]]
+file = "game/func_80018FEC.c"
+pattern = "gaddr-global-via-function-like-macro-argument-display-object-view-2"
+reason = "Same hazard as D_8009B214's override above, a second global through the same macro in this file."
+old = "DISPLAY_OBJECT_VIEW(D_8009B21C)"
+new = "((DisplayObject *)G2H(D_8009B21C))"
+
+[[override]]
+file = "game/func_800283F4.c"
+pattern = "gaddr-global-via-function-like-macro-argument-snapshot-view"
+reason = """
+`DISPLAY_OBJECT_SNAPSHOT_VIEW(D_8009B240)` (`#define
+DISPLAY_OBJECT_SNAPSHOT_VIEW(object) ((DisplayObjectSnapshot *)(object))`):
+D_8009B240 (T1.5 ADR-03 global, GPTR(struct DisplayObject)) passed as a
+function-like macro argument -- same hazard class as every other
+macro-argument override in this batch.
+"""
+old = "DISPLAY_OBJECT_SNAPSHOT_VIEW(D_8009B240)"
+new = "((DisplayObjectSnapshot *)G2H(D_8009B240))"
+
+[[override]]
+file = "game/sd_sequence_tracks.c"
+pattern = "gaddr-global-via-function-like-macro-argument-sd-sequence-track-bytes"
+reason = """
+`SD_SEQUENCE_TRACK_BYTES(D_8009B458)` (`#define SD_SEQUENCE_TRACK_BYTES(state)
+((u8 *)(state)->tracks)`): D_8009B458 (T1.5 ADR-03 global,
+GPTR(SDSecondaryState)) passed as a function-like macro argument -- same
+hazard class as every other macro-argument override in this batch.
+"""
+old = "SD_SEQUENCE_TRACK_BYTES(D_8009B458)"
+new = "((u8 *)((SDSecondaryState *)G2H(D_8009B458))->tracks)"
+
+[[override]]
+file = "game/duel_scene_battle.c"
+pattern = "gaddr-global-via-function-like-macro-argument-effect-request-view"
+all = true
+reason = """
+`DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)` -- same hazard/global as
+duel_card_effects.c's own DUEL_EFFECT_REQUEST_VIEW override; appears 4
+times in this file -- `all = true`.
+"""
+old = "DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)"
+new = "((DuelEffectRequest *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/duel_scene_card_placement.c"
+pattern = "gaddr-global-via-function-like-macro-argument-effect-request-view"
+all = true
+reason = """
+`DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)` -- same hazard/global as
+duel_card_effects.c's own DUEL_EFFECT_REQUEST_VIEW override; appears 2
+times in this file -- `all = true`.
+"""
+old = "DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)"
+new = "((DuelEffectRequest *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/func_80024E58.c"
+pattern = "gaddr-global-via-function-like-macro-argument-effect-request-view"
+all = true
+reason = """
+`DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)` -- same hazard/global as
+duel_card_effects.c's own DUEL_EFFECT_REQUEST_VIEW override; appears 3
+times in this file -- `all = true`.
+"""
+old = "DUEL_EFFECT_REQUEST_VIEW(D_8009B17C)"
+new = "((DuelEffectRequest *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/duel_field_effect_steps.c"
+pattern = "gaddr-global-via-function-like-macro-argument-field-effect-object-view"
+all = true
+reason = """
+`DUEL_FIELD_EFFECT_OBJECT_VIEW(D_8009B17C)` -- same hazard/global as
+duel_card_effects.c's own DUEL_FIELD_EFFECT_OBJECT_VIEW override; appears 2
+times in this file -- `all = true`.
+"""
+old = "DUEL_FIELD_EFFECT_OBJECT_VIEW(D_8009B17C)"
+new = "((DuelFieldEffectObject *)G2H(D_8009B17C))"
+
+[[override]]
+file = "game/func_80018FEC.c"
+pattern = "gaddr-global-cast-then-chained-field-call-argument"
+reason = """
+`DisplayObject_ReleaseIfPresent(((DuelSelectionRecord *)D_8009B1B4)->cursor_object)`:
+two gaddr-needing wraps collide on the same expression -- D_8009B1B4 (T1.5
+ADR-03 global, GPTR(DuelCardPickCursor) by its own assignment a few lines up,
+but viewed here through a DIFFERENT real-struct cast, DuelSelectionRecord*,
+same "legitimate multi-view" shape noted in docs/macos/reports/
+m1-globals-stage1.md) needs G2H before the cast is valid, AND the field it
+reads through that cast, `cursor_object` (a GPTR(struct DisplayObject) field,
+T1.3), needs its own G2H since the whole chain is a call argument to a real
+function. transform_c_expressions's own "nested edits" guard refuses to
+silently pick one -- same precedent as T1.4's nested-edit overrides.
+"""
+old = "((DuelSelectionRecord *)D_8009B1B4)->cursor_object"
+new = "G2H(((DuelSelectionRecord *)G2H(D_8009B1B4))->cursor_object)"
+
+[[override]]
+file = "game/func_8004A7C0.c"
+pattern = "gaddr-global-via-function-like-macro-argument-sd-secondary-offset"
+reason = """
+`SD_SECONDARY_OBJECT_OFFSET_VIEW(D_8009B458, ...)` (`#define
+SD_SECONDARY_OBJECT_OFFSET_VIEW(state, offset) ((SDSecondaryObject
+*)((u8 *)(state) + (offset)))`): D_8009B458 (T1.5 ADR-03 global,
+GPTR(SDSecondaryState)) passed as a function-like macro argument -- same
+hazard class as every other macro-argument override in this batch.
+"""
+old = "SD_SECONDARY_OBJECT_OFFSET_VIEW(\n            D_8009B458, SD_SECONDARY_OBJECT_ARRAY_OFFSET + object_offset)"
+new = "((SDSecondaryObject *)((u8 *)G2H(D_8009B458) + (SD_SECONDARY_OBJECT_ARRAY_OFFSET + object_offset)))"
+
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-via-function-like-macro-argument-B"
+all = true
+reason = """
+`B(D_8009B1CC, 0x6A)` (`#define B(p, o) (*((u8 *)(p) + (o)))`): D_8009B1CC
+(T1.5 ADR-03 global, GPTR(unsigned char)) passed as a function-like macro
+argument -- same hazard class as every other macro-argument override in
+this batch. Appears identically 3 times -- `all = true`.
+"""
+old = "B(D_8009B1CC, 0x6A)"
+new = "(*((u8 *)G2H(D_8009B1CC) + (0x6A)))"
+
+[[override]]
+file = "game/duel_scene_battle.c"
+pattern = "gaddr-global-write-from-macro-argument-cast"
+all = true
+reason = """
+`D_8009B17C = DUEL_EFFECT_REQUEST_BYTES(req);` (`#define
+DUEL_EFFECT_REQUEST_BYTES(request) ((u8 *)(request))`): D_8009B17C (T1.5
+ADR-03 global) assigned from a cast-through-macro RHS -- classify_write's
+own "cast operand" degenerate-extent check (not transform_c_expressions's
+LHS-side one) fires here, because `req` is substituted as a macro argument
+to DUEL_EFFECT_REQUEST_BYTES before the cast is applied. Same hazard class
+as every macro-argument override in this batch, just hit from the RHS of a
+write instead of a read. req is a real DuelEffectRequest* local, so this is
+classify_write's "cast operand is itself a pointer" case: drop the cast,
+H2G the operand directly. Appears identically 3 times -- `all = true`.
+"""
+old = "D_8009B17C = DUEL_EFFECT_REQUEST_BYTES(req);"
+new = "D_8009B17C = H2G(req);"
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-pick-cursor-side"
+all = true
+reason = """
+`D_8009B1B4 = DUEL_CARD_PICK_CURSOR_VIEW(side);` (`#define
+DUEL_CARD_PICK_CURSOR_VIEW(cursor) ((DuelCardPickCursor *)(cursor))`):
+D_8009B1B4 (T1.5 ADR-03 global) assigned from a cast-through-macro RHS --
+same hazard class as duel_scene_battle.c's DUEL_EFFECT_REQUEST_BYTES
+override (see its reason). `side` is a real pointer local: drop the cast,
+H2G directly. Appears identically 3 times -- `all = true`.
+"""
+old = "D_8009B1B4 = DUEL_CARD_PICK_CURSOR_VIEW(side);"
+new = "D_8009B1B4 = H2G(side);"
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-pick-cursor-rec"
+reason = """
+Same hazard/macro as the `side` override above, a different real-pointer
+local (`rec`) through the same macro in this file.
+"""
+old = "D_8009B1B4 = DUEL_CARD_PICK_CURSOR_VIEW(rec);"
+new = "D_8009B1B4 = H2G(rec);"
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-pick-cursor-addr-1"
+reason = """
+Same hazard/macro as the `side`/`rec` overrides above; here the argument is
+an address-of expression on a cast real-struct array element, still a real
+pointer. Two near-identical call sites in this file differ only in
+indentation -- this is the 20-space-indented one.
+"""
+old = "D_8009B1B4 = DUEL_CARD_PICK_CURSOR_VIEW(\n                    &((DuelSelectionSide *)D_800E9F10)[D_8009B1D5].records[2]);"
+new = "D_8009B1B4 = H2G(\n                    &((DuelSelectionSide *)D_800E9F10)[D_8009B1D5].records[2]);"
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-pick-cursor-addr-2"
+reason = """
+Same as gaddr-global-write-from-macro-argument-cast-pick-cursor-addr-1, the
+16-space-indented call site.
+"""
+old = "D_8009B1B4 = DUEL_CARD_PICK_CURSOR_VIEW(\n                &((DuelSelectionSide *)D_800E9F10)[D_8009B1D5].records[2]);"
+new = "D_8009B1B4 = H2G(\n                &((DuelSelectionSide *)D_800E9F10)[D_8009B1D5].records[2]);"
+
+[[override]]
+file = "game/duel_scene_field_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-display-object-view"
+reason = """
+`D_8009B1CC = DISPLAY_OBJECT_VIEW(o);` (`#define DISPLAY_OBJECT_VIEW(object)
+((DisplayObject *)(object))`): same hazard class as this file's other
+macro-argument-cast overrides above. `o` is a real DisplayObject* local.
+"""
+old = "D_8009B1CC = DISPLAY_OBJECT_VIEW(o);"
+new = "D_8009B1CC = H2G(o);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-side-cursor-f10"
+all = true
+reason = """
+`D_8009B1B4 = SIDE_CURSOR(D_800E9F10);` (`#define SIDE_CURSOR(base)
+((DuelCardPickCursor *)((base) + D_8009B1D5 * DUEL_SELECTION_SIDE_SIZE))`):
+D_8009B1B4 (T1.5 ADR-03 global) assigned from a cast-through-macro RHS --
+same hazard class as this batch's other macro-argument-cast-on-write
+overrides. The macro's own body already does guest-address arithmetic on
+D_800E9F10 (itself a real host pointer after G2H, from a separate ADR-03
+global) before the cast, so inlining it with H2G wrapping the whole
+arithmetic expression is correct. Appears identically 3 times -- `all = true`.
+"""
+old = "D_8009B1B4 = SIDE_CURSOR(D_800E9F10);"
+new = "D_8009B1B4 = H2G((D_800E9F10) + D_8009B1D5 * DUEL_SELECTION_SIDE_SIZE);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-side-cursor-f2c"
+reason = "Same hazard/macro as the D_800E9F10 override above, a different base pointer."
+old = "D_8009B1B4 = SIDE_CURSOR(D_800E9F2C);"
+new = "D_8009B1B4 = H2G((D_800E9F2C) + D_8009B1D5 * DUEL_SELECTION_SIDE_SIZE);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-side-cursor-f48"
+reason = "Same hazard/macro as the D_800E9F10 override above, a different base pointer."
+old = "D_8009B1B4 = SIDE_CURSOR(D_800E9F48);"
+new = "D_8009B1B4 = H2G((D_800E9F48) + D_8009B1D5 * DUEL_SELECTION_SIDE_SIZE);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-display-object-view-188"
+reason = """
+`D_8009B188 = DISPLAY_OBJECT_VIEW(sprite);` (`#define DISPLAY_OBJECT_VIEW(object)
+((DisplayObject *)(object))`): same hazard class as this batch's other
+macro-argument-cast-on-write overrides. `sprite` is a real pointer local.
+"""
+old = "D_8009B188 = DISPLAY_OBJECT_VIEW(sprite);"
+new = "D_8009B188 = H2G(sprite);"
+
+[[override]]
+file = "game/duel_scene_hand_actions.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-display-object-view-18c"
+reason = "Same hazard/macro as the D_8009B188 override above, a different global."
+old = "D_8009B18C = DISPLAY_OBJECT_VIEW(sprite);"
+new = "D_8009B18C = H2G(sprite);"
+
+[[override]]
+file = "game/func_800323F8.c"
+pattern = "gaddr-global-write-from-macro-argument-cast-build-deck-transition-state"
+reason = """
+`gBuildDeck_pState = BUILD_DECK_TRANSITION_STATE_VIEW(state);` (`#define
+BUILD_DECK_TRANSITION_STATE_VIEW(state) ((BuildDeckTransitionState *)(state))`):
+gBuildDeck_pState (T1.5 ADR-03 global) assigned from a cast-through-macro
+RHS -- same hazard class as this batch's other macro-argument-cast-on-write
+overrides. `state` is a real `u8 *` local (assigned from parameter `base`).
+"""
+old = "gBuildDeck_pState = BUILD_DECK_TRANSITION_STATE_VIEW(state);"
+new = "gBuildDeck_pState = H2G(state);"
+
+[[override]]
+file = "game/file_transfer_runtime.c"
+pattern = "gaddr-global-self-referential-read-then-write"
+reason = """
+`D_8009B0F8 = (u32 *)((u8 *)D_8009B0F8 + n);`: D_8009B0F8 (T1.5 ADR-03
+global) appears twice in the same statement -- once read (cast to `u8 *`
+for byte-offset arithmetic, needs G2H) and once written (the whole
+expression's result, needs H2G) -- transform_c_expressions's own "nested
+edits" guard refuses to silently pick one, same precedent as
+func_80018FEC.c's override. The outer `(u32 *)` cast is dropped per
+classify_write's own "cast where operand is a pointer -> drop cast, H2G
+the operand" rule.
+"""
+old = "D_8009B0F8 = (u32 *)((u8 *)D_8009B0F8 + n);"
+new = "D_8009B0F8 = H2G((u8 *)G2H(D_8009B0F8) + n);"
+
+[[override]]
+file = "game/func_800218F0.c"
+pattern = "gaddr-global-arrow-field-write-unexposed"
+reason = """
+`D_8009B1E8->root = object;`: D_8009B1E8 (T1.5 ADR-03 global) arrow-accessing
+a GPTR field (`root`, T1.3) as an assignment LHS. Clang's error recovery
+collapses the whole `D_8009B1E8->root` chain into a single opaque
+UNEXPOSED_EXPR (confirmed by walking the AST directly -- no MEMBER_REF_EXPR
+for `root` exists in the tree at all, unlike every other "x->f = real_ptr"
+site in this batch, which do get a normal MEMBER_REF_EXPR and classify_write
+handles them automatically), so no generic classification can ever fire for
+this specific shape -- same kind of AST-blind-spot precedent as
+func_80018FEC.c's/file_transfer_runtime.c's nested-edit overrides, just
+found via a missing node instead of a conflicting one. D_8009B1E8's own
+read side (the `((DuelResultDisplayState *)G2H(D_8009B1E8))` wrap) already
+applies correctly on its own; only the write to `root` needs to be spelled
+out by hand here.
+"""
+old = "D_8009B1E8->root = object;"
+new = "((DuelResultDisplayState *)G2H(D_8009B1E8))->root = H2G(object);"
+
+[[override]]
+file = "game/func_800218F0.c"
+pattern = "gaddr-global-arrow-field-write-unexposed-children0"
+reason = "Same hazard as the `root` override above, the `children[0]` field instead."
+old = "D_8009B1E8->children[0] = object;"
+new = "((DuelResultDisplayState *)G2H(D_8009B1E8))->children[0] = H2G(object);"
+
+[[override]]
+file = "game/func_800218F0.c"
+pattern = "gaddr-global-arrow-field-write-unexposed-children1"
+reason = "Same hazard as the `root` override above, the `children[1]` field instead."
+old = "D_8009B1E8->children[1] = object;"
+new = "((DuelResultDisplayState *)G2H(D_8009B1E8))->children[1] = H2G(object);"
+
+[[override]]
+file = "game/duel_phase_entry.c"
+pattern = "gaddr-global-array-element-arrow-field-write"
+reason = """
+`gDuel_apSwordsEffectObjects[D_8009B1D5]->field_1A = 0xFFFD - D_8009B1D5;`:
+gDuel_apSwordsEffectObjects (T1.5 ADR-03 global, GPTR(struct
+DuelFieldEffectObject) array) subscripted then arrow-accessed as an
+assignment LHS -- same "array element used as arrow-access base" AST
+blind spot as func_800218F0.c's `root`/`children[N]` overrides (no generic
+classification fires for this shape; field_1A itself is a plain int, not
+gaddr, so only the base needs the cast+G2H).
+"""
+old = "gDuel_apSwordsEffectObjects[D_8009B1D5]->field_1A ="
+new = "((struct DuelFieldEffectObject *)G2H(gDuel_apSwordsEffectObjects[D_8009B1D5]))->field_1A ="
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-work-area"
+all = true
+reason = """
+`(MovieWorkArea *)(D_8009B498 + 0x40000)`: D_8009B498 (T1.5 ADR-03 global,
+GPTR(unsigned char)) used in raw pointer arithmetic then cast -- same
+"gaddr computed via arithmetic then cast to a real pointer type without a
+final G2H" class discovered in T1.4j (docs/macos/reports/
+m1-codemod-stage2j.md), not caught by any generic AST rule since the
+immediate parent of D_8009B498's gaddr access is the `+` BINARY_OPERATOR,
+not the cast itself. G2H returns `void *`, and `void * + int` arithmetic is
+valid C, so wrapping just the bare identifier is enough. Appears
+identically 7 times -- `all = true`.
+"""
+old = "D_8009B498 + 0x40000)"
+new = "G2H(D_8009B498) + 0x40000)"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-dctin"
+reason = "Same hazard/global as the work-area override above, a different offset expression (DecDCTin's u32* argument)."
+old = "(u32 *)(D_8009B498 + 0x1B000 + slot * 0xE000)"
+new = "(u32 *)(G2H(D_8009B498) + 0x1B000 + slot * 0xE000)"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-dctout-1"
+reason = "Same hazard/global as the work-area override above, DecDCTout's u32* argument at this call site."
+old = "(u32 *)(D_8009B498 + 0x37000 + D_8009B067 * 0x2D00)"
+new = "(u32 *)(G2H(D_8009B498) + 0x37000 + D_8009B067 * 0x2D00)"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-dctvlc2"
+reason = "Same hazard/global as the work-area override above, DecDCTvlc2's u32* argument."
+old = "(u32 *)(D_8009B498 + 0x1B000 + D_8009B066 * 0xE000)"
+new = "(u32 *)(G2H(D_8009B498) + 0x1B000 + D_8009B066 * 0xE000)"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-direct-cast-u16"
+reason = "D_8009B498 directly cast to u16* with no arithmetic -- same class, plain G2H suffices."
+old = "(u16 *)D_8009B498"
+new = "(u16 *)G2H(D_8009B498)"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-assign-dst"
+reason = """
+`dst = D_8009B498 + (u32)&((RECT *)0)[D_8009B067] + 0x40000;` (dst is `u8 *`):
+same hazard/global as the work-area override above, assigned straight into
+a real pointer local rather than cast -- void* arithmetic implicitly
+converts to u8* in C, so wrapping just the bare identifier is enough here
+too.
+"""
+old = "dst = D_8009B498 + (u32)(uintptr_t)&((RECT *)0)[D_8009B067] + 0x40000;"
+new = "dst = G2H(D_8009B498) + (u32)(uintptr_t)&((RECT *)0)[D_8009B067] + 0x40000;"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-assign-src"
+reason = "Same hazard/global as the `dst` override above, the `src` local (u8 *)."
+old = "src = D_8009B498 + 0x40000;"
+new = "src = G2H(D_8009B498) + 0x40000;"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-loadimage-rect"
+reason = "Same hazard/global as the work-area override above, LoadImage's RECT* argument."
+old = "(RECT *)(D_8009B498 + 0x42400 + (u32)(uintptr_t)&((RECT *)0)[idx])"
+new = "(RECT *)(G2H(D_8009B498) + 0x42400 + (u32)(uintptr_t)&((RECT *)0)[idx])"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-loadimage-u32"
+reason = "Same hazard/global as the work-area override above, LoadImage's second (u32*) argument."
+old = "(u32 *)(\n                  D_8009B498 + 0x37000 + (u32)(uintptr_t)&((u8 (*)[0x2D00])0)[idx]));"
+new = "(u32 *)(\n                  G2H(D_8009B498) + 0x37000 + (u32)(uintptr_t)&((u8 (*)[0x2D00])0)[idx]));"
+
+[[override]]
+file = "game/movie_frame_pipeline.c"
+pattern = "gaddr-global-arithmetic-then-cast-dctout-2"
+reason = "Same hazard/global as the work-area override above, DecDCTout's u32* argument at this second call site."
+old = "(u32 *)(\n                      D_8009B498 + 0x37000 +"
+new = "(u32 *)(\n                      G2H(D_8009B498) + 0x37000 +"
+
+[[override]]
+file = "game/sound_secondary_commands.c"
+pattern = "gaddr-global-arrow-field-read-function-pointer"
+reason = """
+`callback = D_8009B458->field_050C;` (callback: `void (*)(void)`): D_8009B458
+(T1.5 ADR-03 global) arrow-accessing `field_050C`, a GPTR_FN field (T1.3,
+sound.h) -- same AST blind spot as func_800218F0.c's `root`/`children[N]`
+overrides (field_050C never shows up as its own MEMBER_REF_EXPR; only
+D_8009B458's own base gets auto-classified, as the struct-pointer cast, not
+the function-pointer cast this assignment actually needs). Matches the
+PRE-T1.5 baseline behavior exactly: before D_8009B458 was wrapped, this
+same read already relied on a plain G2H around the whole
+`D_8009B458->field_050C` chain (classify_write's existing "assign RHS
+directly" rule, the only reason this ADR-04 field-pointer read has ever
+compiled at all -- G2H is not semantically correct for a function pointer
+encoded in guest storage, but this is pre-existing accepted behavior this
+override preserves verbatim, not a new workaround; real support needs
+ADR-04/T1.6, not yet built).
+"""
+old = "callback = D_8009B458->field_050C;"
+new = "callback = (void (*)(void))G2H(((SDSecondaryState *)G2H(D_8009B458))->field_050C);"
