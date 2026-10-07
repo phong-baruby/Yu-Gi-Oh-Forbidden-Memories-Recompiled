@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T1.8 xong — chờ `/next-task`
+**Task hiện tại:** T1.9 xong — chờ `/next-task`
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -27,7 +27,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 - [x] T1.6 Bảng con trỏ hàm và GCALL — `gen_fn_table.py` (1353 hàm thật + 433 stub, xác minh bằng libclang không tin suông `functions.csv`), `GCALL`/`Memories_GuestFunctionLookup`, test `pc_fn_table` pass (3 hàm retail + 1 callback native synthetic). Mở rộng codemod cho field GPTR_FN `update`/`phase_callback` (đọc-gọi + ghi bằng tên hàm literal); 6 file mới compile sạch, 0 regression. Loại khỏi scope (fen duyệt, để phiên sau): ghi GPTR_FN qua biến cục bộ/tham số trung gian (cần đổi kiểu biến, lan chữ ký hàm), 16+11 bảng/symbol "apfn" từ T1.5.
 - [x] T1.7 VSync entry và stack game trên arm64 — `state_arm64.S` (trampoline AAPCS64, offset khớp `offsetof` thật), `mmap(NULL,...)` + guard page thay `MAP_FIXED_NOREPLACE`. Test `pc_state` pass (1000 vòng VSync, canary 10 thanh ghi callee-saved). Phát hiện + sửa bug có trước (`build_game32.py`'s `NATIVE` glob cuốn luôn file `_lp64`/`_arm64`, từ T1.1/T1.2, chưa ai thấy vì không có toolchain i386 ở đây).
 - [x] T1.8 Platform macOS — `mcontext.h` (PC/SP/FP macro) + `pthread_get_stackaddr_np`/`timer_create`→`setitimer` fix (`crash.c`/`platform_common.c`); `paths.c` Application Support + `_NSGetExecutablePath` (thay `/proc/self/exe`). Spike Cocoa (SDL3 Homebrew tạm, không commit): 600+ frame `SDL_PollEvent` trên stack đã `swapcontext`, không crash/treo, cửa sổ thật xác nhận qua `CGWindowListCopyWindowInfo` — kết luận "phương án A" đủ dùng, không cần "phương án B".
-- [ ] T1.9 Deps pin
+- [x] T1.9 Deps pin — `tools/pc/macos/build_deps.py` build SDL3 3.4.16 + FreeType VER-2-14-3 tĩnh, native arm64, vào `tmp/pc/macos-deps/`. Cache qua stamp file riêng mỗi lib, xác nhận cache hit lần chạy 2. Smoke-test executable (`otool -L` sạch, không `/opt/homebrew`/`/usr/local`; `lipo -info` xác nhận arm64 thuần). FreeType dùng đúng version Windows đã pin (nhất quán 3 platform, không có lý do macOS khác).
 - [ ] T1.10 Build driver, chạy lần đầu
 - [ ] **Gate G1**
 
@@ -55,6 +55,8 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
 |---|---|---|---|
+| 2026-10-07 | T1.9: FreeType cho macOS dùng đúng version `VER-2-14-3` đã pin ở `build_win32_deps.py` (không phải `build_linux_sysroot.py` như milestone ghi — file đó không pin FreeType riêng, lấy qua gói `.deb` Debian không SHA-256 độc lập) | ADR-10 | Milestone sai dẫn chứng — xác minh bằng đọc code trước khi làm, hỏi fen qua plan `/next-task`, fen duyệt. Không có lý do kỹ thuật để macOS dùng version FreeType khác Windows. Chi tiết: `docs/macos/reports/m1-deps-pin.md`. |
+| 2026-10-07 | T1.9: SDL3 build tĩnh macOS cần thêm `-framework AVFoundation -framework CoreMedia` khi link (module camera `SDL_camera_coremedia.m` luôn compile vào, không có cờ CMake tắt riêng, khác Linux có `SDL_PIPEWIRE`/`SDL_JACK`/...) | ADR-10 | Phát hiện qua lỗi link thật (`Undefined symbols ... AVCaptureDevice*`), không đoán trước. Chi tiết: `docs/macos/reports/m1-deps-pin.md`. |
 | 2026-10-07 | T1.8: spike Cocoa kết luận "phương án A" (giữ nguyên kiến trúc stack riêng qua `swapcontext`, không bơm event từ stack gốc) đủ dùng | ADR-09 | SDL3 (Homebrew, tạm) chạy 600+ frame `SDL_PollEvent`/`SDL_Delay` trên stack đã swap, không crash/treo, lặp lại 3 lần nhất quán; Cocoa khởi tạo đầy đủ (menu bar đổi tên app, tự tạo menu "Window"); cửa sổ thật xác nhận qua `CGWindowListCopyWindowInfo` (bounds hợp lệ). Không hỏi fen riêng (nằm trong acceptance đã duyệt của T1.8 — "kết luận rõ ràng"). Chi tiết: `docs/macos/reports/m1-platform-spike.md`. |
 | 2026-10-07 | T1.8: `timer_create`/`SIGEV_THREAD_ID` (glibc) không tồn tại trên macOS — bọc `#ifndef __APPLE__`, đi thẳng xuống nhánh `setitimer` CÓ SẴN trong `platform_common.c` (vốn chỉ là fallback cho Linux) | ADR-09 | Nhánh `setitimer(ITIMER_REAL,...)` đã tồn tại sẵn đúng cho tình huống này (ADR-09: "Giữ SIGALRM/setitimer (macOS hỗ trợ)") — không cần viết cơ chế mới, chỉ cần định tuyến đúng. Vẫn nhắm đúng main thread vì mọi thread khác tự chặn SIGALRM (comment gốc). Chi tiết: `docs/macos/reports/m1-platform-spike.md`. |
 | 2026-10-07 | T1.7: đổi tên field `MemoriesStateEntry.esp`→`.sp` (dùng chung tên cho cả i386 và arm64) khiến `from_game_code()` tự nhiên luôn `false` dưới LP64, không cần `#ifdef` cho toàn bộ máy save/load trong `state.c` | ADR-08 | `STACK_BASE`/`STACK_TOP` (địa chỉ cố định kiểu x86) không bao giờ khớp `sp` thật (từ `mmap(NULL,...)`), nên `Memories_StatePoint` tự nhiên no-op — đúng ý "save state chưa làm" của milestone mà không phải sửa logic hàng trăm dòng save/load/relocate/rewind. Không hỏi fen riêng (nằm trong phạm vi plan đã duyệt). Chi tiết: `docs/macos/reports/m1-state-entry.md`. |
