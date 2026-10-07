@@ -80,7 +80,7 @@ second (text-splicing runs back-to-front) slices into text the first edit
 already rewrote, corrupting both. Consecutive fields sharing one extent
 start are therefore grouped and edited as a unit (group_replacement below),
 never one declarator at a time."""
-import argparse, glob, json, os, re, subprocess, sys, tomllib
+import argparse, csv, glob, json, os, re, subprocess, sys, tomllib
 import clang.cindex as cindex
 
 INLINE_FN_PTR_MARKER = b"/* lp64: inline fn ptr */"
@@ -933,6 +933,25 @@ def fix_offsetof_casts(data):
     return OFFSETOF_CAST_RE.sub(rb'(u32)(uintptr_t)&', data)
 
 
+def load_function_addresses(path):
+    """name -> retail address (int), from config/slus_01411/functions.csv --
+    T1.6/ADR-04: writing a literal decompiled function name into a GPTR_FN
+    field (`x.f = (T)SomeFunc;`) needs that function's retail address as a
+    compile-time constant, not a runtime call (H2G only accepts a
+    g_ram/g_scratch *data* pointer, and a function's host address is
+    neither; there is also no way to write a constant-expression static
+    initializer that calls a runtime function). {} if the file does not
+    exist, so the tool stays usable without it (same spirit as
+    load_overrides's own missing-file fallback)."""
+    if not os.path.exists(path):
+        return {}
+    addresses = {}
+    with open(path, newline="") as handle:
+        for row in csv.DictReader(handle):
+            addresses[row["name"]] = int(row["address"], 16)
+    return addresses
+
+
 def load_overrides(path):
     """config/lp64/overrides.toml's [[override]] entries, or [] if the file
     does not exist (so the tool stays usable before any override is needed)."""
@@ -1000,8 +1019,14 @@ def is_pointer_like(t):
     # `extern u32 D_800916D4[]` -- a real host array/global, T1.4d) --
     # classify_write's "is this RHS a real pointer, needing H2G" checks need
     # to recognize this the same way a cast or a real `T *` would, not just
-    # TypeKind.POINTER itself.
-    return t.kind == cindex.TypeKind.POINTER or t.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY)
+    # TypeKind.POINTER itself. get_canonical() first: a variable declared
+    # through a pointer typedef (e.g. DisplayObjectCallback, GPTR_FN's own
+    # motivating example) reports its own .kind as TypeKind.ELABORATED or
+    # TYPEDEF, not POINTER -- found as a GPTR_FN read into exactly such a
+    # local silently getting no edit at all, T1.6.
+    canonical = t.get_canonical()
+    return canonical.kind == cindex.TypeKind.POINTER or canonical.kind in (
+        cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY)
 
 
 def build_parent_map(cursor, parent_map, parent=None):
@@ -1163,7 +1188,7 @@ def classify_write(rhs, data, context):
         if node.extent.start.offset == node.extent.end.offset:
             sys.exit(f"error: {context}: RHS ({label}) has a degenerate source extent "
                      f"-- add a config/lp64/overrides.toml entry")
-    if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR and rhs.type.kind == cindex.TypeKind.POINTER:
+    if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR and rhs.type.get_canonical().kind == cindex.TypeKind.POINTER:
         # get_children() on a CSTYLE_CAST_EXPR gives the destination type's
         # own TYPE_REF first, then the operand -- the *last* child, not the
         # first, and itself possibly wrapped (unwrap_transparent) in the
@@ -1183,7 +1208,59 @@ def classify_write(rhs, data, context):
     return None  # gaddr already, or a plain integer: both fine as-is
 
 
-def transform_c_expressions(data, tu, filename):
+def classify_write_fn(rhs, data, context, function_addresses):
+    """Replacement for the RHS of `x.f = rhs` where f is GPTR_FN (T1.6/
+    ADR-04): unlike classify_write's data pointers, a GPTR_FN field's write
+    side cannot route through H2G at all -- H2G only accepts a pointer
+    actually inside g_ram/g_scratch, and a native function's address is
+    neither (it aborts on exactly this, by design); there is also no way to
+    write a runtime function call inside a static initializer, so even a
+    non-initializer assignment gets the same compile-time treatment for
+    consistency. The only shape handled here: `rhs` is (optionally through a
+    C-style cast) a literal reference to a decompiled function with a known
+    retail address (config/slus_01411/functions.csv, loaded by
+    load_function_addresses) -- substituted as that address's literal
+    constant, computed by this codemod, not at runtime. `0`/NULL is valid
+    as-is (gaddr 0 already is the right value).
+
+    Anything else -- a local variable or parameter (which could hold more
+    than one candidate address, picked at runtime: `duel_scene_battle.c`'s
+    `cb`, `file_stream.c`'s own `callback` parameter) -- returns None (no
+    edit), the same "not a shape this pass has a rule for" outcome as every
+    other not-yet-handled case in transform_c_expressions (e.g. the
+    pointer-stride and 2-tier-gaddr-decode categories from T1.4): the field
+    is simply left as its original source text, and the file fails to
+    compile cleanly on its own later, same as those. This is real,
+    unfinished work -- retyping the local/parameter itself to gaddr, and
+    everywhere that reaches, including across a call boundary for a
+    parameter -- left for a later T1.6 session (fen's call, see
+    docs/macos/PROGRESS.md), not something safe to paper over here. Still
+    aborts (unlike the "no edit" case above) for a literal function
+    reference with NO known retail address at all: that one specific shape
+    is ADR-04's own 0x9F000000+ synthetic range for a PC-only native
+    function, not yet wired into any generator this reads, and warrants
+    attention rather than silently leaving broken code behind, same spirit
+    as classify_write's own degenerate-extent checks."""
+    if data[rhs.extent.start.offset:rhs.extent.end.offset].strip() == b"0":
+        return None
+    node = rhs
+    if node.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
+        node = unwrap_transparent(list(node.get_children())[-1])
+    node = unwrap_transparent(node)
+    if node.kind == cindex.CursorKind.DECL_REF_EXPR and node.referenced is not None \
+            and node.referenced.kind == cindex.CursorKind.FUNCTION_DECL:
+        name = node.referenced.spelling
+        address = function_addresses.get(name)
+        if address is None:
+            sys.exit(f"error: {context}: {name!r} has no known retail address "
+                     f"(config/slus_01411/functions.csv) -- add a config/lp64/overrides.toml "
+                     f"entry (a PC-only function needs ADR-04's 0x9F000000+ synthetic range, "
+                     f"not yet wired up here)")
+        return (rhs.extent.start.offset, rhs.extent.end.offset, f"0x{address:08X}u".encode())
+    return None  # local variable/parameter: known, deliberately deferred (see docstring)
+
+
+def transform_c_expressions(data, tu, filename, function_addresses=None):
     """Edits for ADR-05 (2)/(4) in a *.c file's function bodies -- see the
     module docstring for the overall shape, classify_write's docstring for
     the write side. Every gaddr-typed MEMBER_REF_EXPR in `filename` is
@@ -1195,6 +1272,21 @@ def transform_c_expressions(data, tu, filename):
     build_parent_map(tu.cursor, parent_map)
     header_cache = {}
     edits = []
+    function_addresses = function_addresses or {}
+
+    def field_is_fn(ref):
+        """True if `ref`'s own declaration is GPTR_FN(T), not GPTR(T) --
+        T1.6/ADR-04: such a field holds a function's retail address, not a
+        data address, and needs GCALL (read) / classify_write_fn (write)
+        instead of G2H/H2G. None (not a plain GPTR(T)/GPTR_FN(T) field,
+        e.g. an ADR-03 global's own `.value` -- none of the 111 T1.5
+        globals are function-pointer-shaped yet, see gen_globals.py's own
+        exclusion) is treated as False: every existing call site already
+        has its own fallback for "not a recognized field" via
+        pointee_or_exit's sys.exit, so this only needs to answer the is_fn
+        question when it already knows the field is a plain GPTR(_FN)(T)."""
+        info = field_pointee(ref, header_cache)
+        return info is not None and info[1]
 
     def pointee_or_exit(ref, context):
         info = field_pointee(ref, header_cache)
@@ -1285,7 +1377,11 @@ def transform_c_expressions(data, tu, filename):
 
         if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
                 and is_assign_lhs(parent, cursor) and binop_operator(parent, data) == "=":
-            edit = classify_write(unwrap_transparent(list(parent.get_children())[1]), data, context)
+            rhs_node = unwrap_transparent(list(parent.get_children())[1])
+            if field_is_fn(ref):
+                edit = classify_write_fn(rhs_node, data, context, function_addresses)
+            else:
+                edit = classify_write(rhs_node, data, context)
             if edit is not None:
                 edits.append(edit)
             continue
@@ -1302,29 +1398,48 @@ def transform_c_expressions(data, tu, filename):
             # adding H2G where not needed, is the safer default) while
             # compile-verifying a batch this case had not come up in yet.
             lhs = list(parent.get_children())[0]
-            if lhs.type.kind == cindex.TypeKind.POINTER:
-                edits.append((start, end, f"({lhs.type.spelling})G2H(".encode() + data[start:end] + b")"))
+            if lhs.type.get_canonical().kind == cindex.TypeKind.POINTER:
+                if field_is_fn(ref):
+                    # T1.6/ADR-04: `fn = e->update;` (fn already declared) --
+                    # GCALL already produces the right type, so no outer cast.
+                    pointee, _ = pointee_or_exit(ref, context)
+                    edits.append((start, end, f"GCALL({pointee}, ".encode() + data[start:end] + b")"))
+                else:
+                    edits.append((start, end, f"({lhs.type.spelling})G2H(".encode() + data[start:end] + b")"))
             continue  # LHS not a pointer either: both sides already gaddr/int, no edit
 
         if parent is not None and parent.kind == cindex.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR \
                 and is_assign_lhs(parent, cursor):
             rhs = unwrap_transparent(list(parent.get_children())[1])
-            if rhs.type.kind == cindex.TypeKind.POINTER:
+            if rhs.type.get_canonical().kind == cindex.TypeKind.POINTER:
                 sys.exit(f"error: {context}: compound assignment to {cursor.spelling!r} with a "
                          f"pointer-typed RHS -- add a config/lp64/overrides.toml entry")
             continue  # gaddr += <int>: already valid, same arithmetic either way
 
         if parent is not None and parent.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
-            if parent.type.kind == cindex.TypeKind.POINTER:
-                edits.append((start, end, b"G2H(" + data[start:end] + b")"))
+            if parent.type.get_canonical().kind == cindex.TypeKind.POINTER:
+                if field_is_fn(ref):
+                    # T1.6/ADR-04: `(SomeType)object->update` -- GCALL
+                    # already produces the field's own GPTR_FN(T) type;
+                    # the source's own explicit cast around it (to
+                    # whatever SomeType is) is left untouched, now casting
+                    # from that instead of from a bare G2H(void *).
+                    pointee, _ = pointee_or_exit(ref, context)
+                    edits.append((start, end, f"GCALL({pointee}, ".encode() + data[start:end] + b")"))
+                else:
+                    edits.append((start, end, b"G2H(" + data[start:end] + b")"))
             continue  # cast to a non-pointer type (e.g. (s32)x.f): already valid
 
         if parent is not None and parent.kind == cindex.CursorKind.VAR_DECL:
             # `T *p = x.f;`: a declaration's initializer, not a cast -- same
             # "read as a pointer" shape, the pointer type just comes from the
             # declaration instead of an explicit cast.
-            if parent.type.kind == cindex.TypeKind.POINTER:
-                edits.append((start, end, f"({parent.type.spelling})G2H(".encode() + data[start:end] + b")"))
+            if parent.type.get_canonical().kind == cindex.TypeKind.POINTER:
+                if field_is_fn(ref):
+                    pointee, _ = pointee_or_exit(ref, context)
+                    edits.append((start, end, f"GCALL({pointee}, ".encode() + data[start:end] + b")"))
+                else:
+                    edits.append((start, end, f"({parent.type.spelling})G2H(".encode() + data[start:end] + b")"))
             continue  # declared as a non-pointer (e.g. `u32 x = f.field;`): already valid
 
         if parent is not None and parent.kind == cindex.CursorKind.CALL_EXPR:
@@ -1336,7 +1451,14 @@ def transform_c_expressions(data, tu, filename):
             # (verified -- T1.4c found some of these callees have no visible
             # prototype in scope at all, where this matters even more, since
             # there is no parameter type to read back and match anyway).
-            edits.append((start, end, b"G2H(" + data[start:end] + b")"))
+            if field_is_fn(ref):
+                # T1.6/ADR-04: not seen yet for update/phase_callback (no
+                # call site passes either by value), but GCALL's cast is
+                # as needed here as everywhere else is_fn matters.
+                pointee, _ = pointee_or_exit(ref, context)
+                edits.append((start, end, f"GCALL({pointee}, ".encode() + data[start:end] + b")"))
+            else:
+                edits.append((start, end, b"G2H(" + data[start:end] + b")"))
             continue
 
         if parent is not None and parent.kind == cindex.CursorKind.UNARY_OPERATOR:
@@ -1372,13 +1494,13 @@ def transform_c_expressions(data, tu, filename):
                     edits.append(edit)
                 continue
             if grandparent is not None and grandparent.kind == cindex.CursorKind.VAR_DECL:
-                if grandparent.type.kind == cindex.TypeKind.POINTER:
+                if grandparent.type.get_canonical().kind == cindex.TypeKind.POINTER:
                     edits.append((pstart, pend, f"({grandparent.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
                 continue
             if grandparent is not None and grandparent.kind == cindex.CursorKind.BINARY_OPERATOR \
                     and binop_operator(grandparent, data) == "=" and not is_assign_lhs(grandparent, parent):
                 lhs = list(grandparent.get_children())[0]
-                if lhs.type.kind == cindex.TypeKind.POINTER:
+                if lhs.type.get_canonical().kind == cindex.TypeKind.POINTER:
                     edits.append((pstart, pend, f"({lhs.type.spelling})G2H(".encode() + data[pstart:pend] + b")"))
                 continue
             # Anything else reading x.f[i] (a cast, a call argument, a plain
@@ -1387,15 +1509,29 @@ def transform_c_expressions(data, tu, filename):
             # else in this function.
             continue
 
+        # A field called directly as a function (`x.f(args)`, ADR-05 (6)):
+        # clang's error recovery collapses that whole shape down to the
+        # field's immediate parent being its enclosing statement, not a
+        # CALL_EXPR (confirmed by walking the AST directly), so it cannot be
+        # routed on `parent`'s kind like every branch above -- checked
+        # purely textually instead, same reasoning as the `->` chain branch
+        # near the top of this loop: the character right after `cursor`'s
+        # own extent is reliable regardless of what clang made of the rest.
+        # Left genuinely broken (no edit at all, same as the "anything else"
+        # catch-all right below) for a field that is NOT GPTR_FN -- a data
+        # field called as a function is not a shape ADR-05 has a rule for at
+        # all, GCALL or not. T1.6 (ADR-04): previously (T1.4c) GCALL did not
+        # exist yet at all, so this whole shape -- including GPTR_FN fields
+        # -- fell through here unfixed; see
+        # docs/macos/reports/m1-codemod-stage2c.md for the one site this
+        # applied to then (func_80014294.c's phase_callback), now fixed.
+        if data[end:end + 1] == b"(" and field_is_fn(ref):
+            pointee, _ = pointee_or_exit(ref, context)
+            edits.append((start, end, f"GCALL({pointee}, ".encode() + data[start:end] + b")"))
+            continue
+
         # Anything else (plain integer use: arithmetic operand, comparison,
-        # ...): gaddr already IS the right type here, no edit needed. This
-        # includes a field called directly as a function (`x.f(args)`, ADR-05
-        # (6)) -- clang's error recovery collapses that whole shape down to
-        # the field's immediate parent being its enclosing statement, not a
-        # CALL_EXPR, so it already falls through to here on its own; left
-        # genuinely broken on purpose (fen's call, T1.4c) until GCALL exists
-        # (ADR-04, T1.6) -- see docs/macos/reports/m1-codemod-stage2c.md for
-        # the one site this applied to (func_80014294.c's phase_callback).
+        # ...): gaddr already IS the right type here, no edit needed.
 
     # Two edits can nest: classify_write (and the CALL_EXPR-argument branch's
     # bare G2H wrap, when its target itself sits inside a write) build a
@@ -1424,7 +1560,8 @@ def transform_c_expressions(data, tu, filename):
     return out, len(edits)
 
 
-def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, expr_pass, globals_map=None):
+def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, expr_pass, globals_map=None,
+                        function_addresses=None):
     """A *.c file's codemod output: config/lp64/overrides.toml's literal
     substitutions, then (only for files under EXPR_GLOBS) transform_c_expressions
     on the result. Writes to out_path before the expression pass parses it
@@ -1462,7 +1599,7 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
     tu = parse_code(out_path, out_dir, in_dir)
     if tu is None:
         sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
-    out_data, count = transform_c_expressions(data, tu, os.path.basename(path))
+    out_data, count = transform_c_expressions(data, tu, os.path.basename(path), function_addresses)
     with open(out_path, "wb") as handle:
         handle.write(out_data)
     return count
@@ -1494,6 +1631,9 @@ def main():
     parser.add_argument("--globals", default="tmp/lp64/gen/globals_census.json",
                         help="T1.5/ADR-03 census (tools/pc/lp64/gen_globals.py); "
                              "no global codemod runs if this file does not exist")
+    parser.add_argument("--functions", default="config/slus_01411/functions.csv",
+                        help="T1.6/ADR-04 retail function addresses, for writing a literal "
+                             "function name into a GPTR_FN field (classify_write_fn)")
     parser.add_argument("headers", nargs="*",
                         help="headers under --in-dir to transform (default: every header "
                              "under src/*.h, src/game, src/overlays, src/psyq, plus every "
@@ -1522,6 +1662,7 @@ def main():
 
     overrides = load_overrides(options.overrides)
     globals_map = load_globals(options.globals)
+    function_addresses = load_function_addresses(options.functions)
 
     total_fields, total_files = 0, 0
     for header in relative:
@@ -1544,7 +1685,8 @@ def main():
             if not os.path.exists(src):
                 sys.exit(f"{src}: not found")
             total_expr += transform_code_file(src, dst, relpath, overrides, options.out,
-                                              options.in_dir, relpath in expr_relative, globals_map)
+                                              options.in_dir, relpath in expr_relative, globals_map,
+                                              function_addresses)
         print(f"{len(code_relative)} *.c file(s) processed, {total_expr} expression(s) transformed")
 
 

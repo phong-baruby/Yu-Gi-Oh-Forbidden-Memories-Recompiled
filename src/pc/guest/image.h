@@ -29,6 +29,21 @@ typedef struct MemoriesGuestFunction {
 extern const MemoriesGuestFunction Memories_FunctionMap[];
 extern const unsigned Memories_FunctionMapCount;
 
+/* T1.6/ADR-04: generated alongside Memories_FunctionMap (by
+ * tools/pc/lp64/gen_fn_table.py for LP64; nothing generates this for ILP32
+ * yet, since its own fault path -- image.c's report_guest_fault -- has never
+ * needed a symbol name, only the faulting address). Every functions.csv row,
+ * whether or not a host function was found for it, purely so a GCALL lookup
+ * miss (src/pc/guest/fn_table_lp64.c) can name the nearest known retail
+ * symbol instead of just the bare address. Sorted by address, same order as
+ * Memories_FunctionMap. */
+typedef struct MemoriesGuestSymbol {
+    unsigned address;
+    const char *name;
+} MemoriesGuestSymbol;
+extern const MemoriesGuestSymbol Memories_SymbolTable[];
+extern const unsigned Memories_SymbolTableCount;
+
 /* Generated likewise: the modules built for a shared load bank, with the host
  * sections holding their variables. See src/pc/guest/modules.c. */
 typedef struct MemoriesModule {

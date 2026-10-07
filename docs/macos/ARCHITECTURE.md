@@ -48,6 +48,20 @@ Phép mask thay thế toàn bộ cơ chế trap/decode lệnh x86 mà `image.c` 
 ## ADR-04 — Con trỏ hàm lưu trong dữ liệu guest — Accepted
 Field `GPTR(fn)` lưu **địa chỉ retail** của hàm. Bảng `g_fn_table` (địa chỉ → host function) được sinh từ `functions.csv` và `guest_addresses.txt`, sort sẵn để tra bằng binary search. Mọi lời gọi qua con trỏ lấy từ guest đều đi qua `GCALL(type, addr)(args...)`. Hàm native chỉ có ở PC mà vẫn được cài vào struct guest (ví dụ primitive driver của LIBGS) được cấp **địa chỉ tổng hợp** trong dải `0x9F000000 + index`. Dải này nằm ngoài vùng RAM/mirror, và index cố định theo tên hàm để save state không bị lệch.
 
+**Hiện thực T1.6 (2026-10-07, xem `docs/macos/reports/m1-fn-table.md`):** `g_fn_table` chính là
+`Memories_FunctionMap` (struct `MemoriesGuestFunction`, `src/pc/guest/image.h`) — KHÔNG phải cơ chế mới,
+mà cùng bảng upstream ILP32 đã dùng, sinh cho LP64 bởi `tools/pc/lp64/gen_fn_table.py` (xác minh bằng
+libclang quét source cho từng tên trong `functions.csv`, không tin suông cột `status`, vì chưa có build
+driver để dùng `nm` như `build_game32.py` làm). `GCALL` KHÔNG tái dùng được cơ chế TIÊU THỤ bảng của ILP32
+(`image.c`'s `guest_call_target`, chạy trong signal handler sau một page-fault — guest RAM map không có
+quyền thực thi, gọi qua địa chỉ MIPS tự fault tại đúng địa chỉ đó): cơ chế này cần RAM guest map tại một
+địa chỉ cố định mà ADR-01 đã bác bỏ cho arm64 macOS. `GCALL(type, addr)` tra cứu TƯỜNG MINH tại call site
+(`Memories_GuestFunctionLookup`, `src/pc/guest/fn_table_lp64.c`) thay vì dựa vào trap. Chiều GHI (lưu địa
+chỉ hàm vào field `GPTR_FN`) khi RHS là tên hàm đã decompile viết literal trong source được codemod thay
+bằng hằng số địa chỉ retail (tính lúc codemod, không phải runtime — không có cách viết static initializer
+gọi hàm runtime, và `H2G` không nhận địa chỉ mã); khi RHS là biến cục bộ/tham số (có thể giữ nhiều ứng
+viên khác nhau tuỳ runtime) thì CHƯA xử lý được — cần đổi kiểu biến đó sang `gaddr`, để lại cho phiên sau.
+
 ## ADR-05 — Codemod thay vì diff — Accepted
 LP64 là một **phép biến đổi được mã hoá**, chứ không phải một bộ patch. `tools/pc/lp64/codemod.py` dùng libclang (Python binding, đúng phong cách tools của upstream). Nó đọc `src/`, ghi kết quả vào `tmp/lp64/src/`, và build LP64 compile từ cây output đó. Những chỗ không tự suy ra được được khai báo trong `config/lp64/overrides.toml` theo `file + function + pattern` (không theo số dòng) để sống sót qua các lần sync upstream. Tiêu chí thành công: sync upstream thì chỉ cần chạy lại codemod; override mới chỉ phát sinh khi upstream thêm pattern mới.
 Các biến đổi chính:
