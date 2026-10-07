@@ -13,6 +13,9 @@
 #endif
 #include "pc/compat/posix.h" /* mkdir, and readlink of /proc/self/exe, on Windows */
 #include <sys/stat.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h> /* _NSGetExecutablePath: no /proc on Darwin at all */
+#endif
 
 #define PATH_MAX_ 1024
 #define APP_NAME "YFM Re-Decomp"
@@ -48,13 +51,28 @@ static void directory_of(char *path)
 
 const char *Paths_ProgramDir(void)
 {
-    ssize_t length;
     if (program_dir[0]) return program_dir;
-    length = readlink("/proc/self/exe", program_dir, sizeof(program_dir) - 1);
-    if (length > 0 && (size_t)length < sizeof(program_dir)) {
-        program_dir[length] = '\0';
-        directory_of(program_dir);
+#ifdef __APPLE__
+    /* No /proc on Darwin at all (not just a differently-spelled special
+     * file, unlike Windows going through readlink's own Memories_Readlink
+     * shim) -- this is Apple's own documented way to the same answer. */
+    {
+        uint32_t size = (uint32_t)sizeof(program_dir);
+        if (_NSGetExecutablePath(program_dir, &size) == 0) {
+            directory_of(program_dir);
+        } else {
+            program_dir[0] = '\0';
+        }
     }
+#else
+    {
+        ssize_t length = readlink("/proc/self/exe", program_dir, sizeof(program_dir) - 1);
+        if (length > 0 && (size_t)length < sizeof(program_dir)) {
+            program_dir[length] = '\0';
+            directory_of(program_dir);
+        }
+    }
+#endif
     if (!program_dir[0]) snprintf(program_dir, sizeof(program_dir), ".");
     return program_dir;
 }
@@ -102,6 +120,12 @@ const char *Paths_UserDir(void)
         }
         else
             snprintf(root, sizeof(root), "%s/Documents/My Games", profile && *profile ? profile : ".");
+#elif defined(__APPLE__)
+        /* ADR-09: ~/Library/Application Support is where macOS apps keep
+         * their own files -- no XDG-style override env var convention
+         * here, unlike Linux. */
+        const char *home = getenv("HOME");
+        if (home && *home) snprintf(root, sizeof(root), "%s/Library/Application Support", home);
 #else
         const char *home = getenv("HOME"), *xdg = getenv("XDG_DATA_HOME");
         if (xdg && *xdg == '/') snprintf(root, sizeof(root), "%s", xdg);

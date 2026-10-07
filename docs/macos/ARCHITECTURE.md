@@ -116,6 +116,11 @@ thay `MAP_FIXED_NOREPLACE` (không tồn tại trên macOS).
 - Chỉ dùng backend SDL3 (`sdl.c`); bỏ qua X11, ALSA và evdev trên macOS.
 - Giữ SIGALRM/`setitimer` (macOS hỗ trợ). Chỉ phần đọc PC lấy từ `ucontext` được port qua header `src/pc/compat/mcontext.h`: `uc_mcontext->__ss.__pc` / `__sp` / `__fp`.
 - Cần xác minh (T1.8): Cocoa yêu cầu event loop chạy trên main thread, trong khi upstream chạy game trên một **stack riêng** ngay trên main thread. Nếu `SDL_PollEvent` gặp vấn đề khi chạy trên stack đó, phương án B là bơm event từ stack gốc tại điểm VSync.
+  **Đã xác minh (2026-10-07, T1.8, xem `docs/macos/reports/m1-platform-spike.md`): phương án A đủ
+  dùng.** Spike (SDL3 Homebrew tạm, không commit) chạy 600+ frame `SDL_PollEvent`/`SDL_Delay` trên 1
+  stack đã `swapcontext` (đúng kiến trúc `Memories_StateRunGame`, T1.7) — không crash, không treo, lặp
+  lại nhất quán 3 lần; Cocoa khởi tạo đầy đủ (menu bar/menu "Window" tự tạo); cửa sổ thật xác nhận qua
+  `CGWindowListCopyWindowInfo`. Không cần phương án B.
 - Đường dẫn user: `~/Library/Application Support/YFM-Recompiled/`. Font: bundle sẵn một TTF (không có fontconfig trên macOS).
 
 ## ADR-10 — Build và dependency — Accepted

@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T1.7 xong — chờ `/next-task`
+**Task hiện tại:** T1.8 xong — chờ `/next-task`
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -26,7 +26,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 - [x] T1.5 Globals — phiên 1: đo quy mô + prototype (871 symbol khớp). Phiên 2: codemod hoá 80/111 symbol `pointer`/`pointer-array` (31 loại trừ — 16 bảng con trỏ hàm cần ADR-04/T1.6, 4 "vừa extern vừa định nghĩa thật" cần cơ chế khởi tạo riêng, 11 xung đột từ phiên 1); 10 file mới compile sạch, 0 regression, idempotent, layout khớp. 749 global data thuần + xử lý định nghĩa thật còn lại để dành phiên T1.5 sau.
 - [x] T1.6 Bảng con trỏ hàm và GCALL — `gen_fn_table.py` (1353 hàm thật + 433 stub, xác minh bằng libclang không tin suông `functions.csv`), `GCALL`/`Memories_GuestFunctionLookup`, test `pc_fn_table` pass (3 hàm retail + 1 callback native synthetic). Mở rộng codemod cho field GPTR_FN `update`/`phase_callback` (đọc-gọi + ghi bằng tên hàm literal); 6 file mới compile sạch, 0 regression. Loại khỏi scope (fen duyệt, để phiên sau): ghi GPTR_FN qua biến cục bộ/tham số trung gian (cần đổi kiểu biến, lan chữ ký hàm), 16+11 bảng/symbol "apfn" từ T1.5.
 - [x] T1.7 VSync entry và stack game trên arm64 — `state_arm64.S` (trampoline AAPCS64, offset khớp `offsetof` thật), `mmap(NULL,...)` + guard page thay `MAP_FIXED_NOREPLACE`. Test `pc_state` pass (1000 vòng VSync, canary 10 thanh ghi callee-saved). Phát hiện + sửa bug có trước (`build_game32.py`'s `NATIVE` glob cuốn luôn file `_lp64`/`_arm64`, từ T1.1/T1.2, chưa ai thấy vì không có toolchain i386 ở đây).
-- [ ] T1.8 Platform macOS
+- [x] T1.8 Platform macOS — `mcontext.h` (PC/SP/FP macro) + `pthread_get_stackaddr_np`/`timer_create`→`setitimer` fix (`crash.c`/`platform_common.c`); `paths.c` Application Support + `_NSGetExecutablePath` (thay `/proc/self/exe`). Spike Cocoa (SDL3 Homebrew tạm, không commit): 600+ frame `SDL_PollEvent` trên stack đã `swapcontext`, không crash/treo, cửa sổ thật xác nhận qua `CGWindowListCopyWindowInfo` — kết luận "phương án A" đủ dùng, không cần "phương án B".
 - [ ] T1.9 Deps pin
 - [ ] T1.10 Build driver, chạy lần đầu
 - [ ] **Gate G1**
@@ -55,6 +55,8 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
 |---|---|---|---|
+| 2026-10-07 | T1.8: spike Cocoa kết luận "phương án A" (giữ nguyên kiến trúc stack riêng qua `swapcontext`, không bơm event từ stack gốc) đủ dùng | ADR-09 | SDL3 (Homebrew, tạm) chạy 600+ frame `SDL_PollEvent`/`SDL_Delay` trên stack đã swap, không crash/treo, lặp lại 3 lần nhất quán; Cocoa khởi tạo đầy đủ (menu bar đổi tên app, tự tạo menu "Window"); cửa sổ thật xác nhận qua `CGWindowListCopyWindowInfo` (bounds hợp lệ). Không hỏi fen riêng (nằm trong acceptance đã duyệt của T1.8 — "kết luận rõ ràng"). Chi tiết: `docs/macos/reports/m1-platform-spike.md`. |
+| 2026-10-07 | T1.8: `timer_create`/`SIGEV_THREAD_ID` (glibc) không tồn tại trên macOS — bọc `#ifndef __APPLE__`, đi thẳng xuống nhánh `setitimer` CÓ SẴN trong `platform_common.c` (vốn chỉ là fallback cho Linux) | ADR-09 | Nhánh `setitimer(ITIMER_REAL,...)` đã tồn tại sẵn đúng cho tình huống này (ADR-09: "Giữ SIGALRM/setitimer (macOS hỗ trợ)") — không cần viết cơ chế mới, chỉ cần định tuyến đúng. Vẫn nhắm đúng main thread vì mọi thread khác tự chặn SIGALRM (comment gốc). Chi tiết: `docs/macos/reports/m1-platform-spike.md`. |
 | 2026-10-07 | T1.7: đổi tên field `MemoriesStateEntry.esp`→`.sp` (dùng chung tên cho cả i386 và arm64) khiến `from_game_code()` tự nhiên luôn `false` dưới LP64, không cần `#ifdef` cho toàn bộ máy save/load trong `state.c` | ADR-08 | `STACK_BASE`/`STACK_TOP` (địa chỉ cố định kiểu x86) không bao giờ khớp `sp` thật (từ `mmap(NULL,...)`), nên `Memories_StatePoint` tự nhiên no-op — đúng ý "save state chưa làm" của milestone mà không phải sửa logic hàng trăm dòng save/load/relocate/rewind. Không hỏi fen riêng (nằm trong phạm vi plan đã duyệt). Chi tiết: `docs/macos/reports/m1-state-entry.md`. |
 | 2026-10-07 | T1.7: sửa `build_game32.py`'s `NATIVE` glob (loại `_lp64.`/`_arm64.`) — phát hiện giữa phiên, không hỏi fen riêng vì là lỗi thật cần sửa để thêm `state_arm64.S` an toàn | — | `glob.glob("src/pc/guest/*.[cS]")` không lọc tên, cuốn mọi file macOS-only cùng thư mục vào build i386 — đã âm thầm đúng với `gptr_lp64.c`/`image_lp64.c` từ T1.1/T1.2, không ai phát hiện vì máy này không có toolchain i386 Linux/Windows. Ghi Upstream touch log. Chi tiết: `docs/macos/reports/m1-state-entry.md`. |
 | 2026-10-07 | T1.6: phạm vi thu hẹp lại "gán trực tiếp bằng tên hàm literal" cho field GPTR_FN, loại bỏ "gán qua biến cục bộ/tham số trung gian" (đổi kiểu biến sang gaddr, lan sang chữ ký hàm) | ADR-04 | Khảo sát thật cho thấy `update`/`phase_callback` không chỉ bị ĐỌC-rồi-GỌI (GCALL giải quyết) mà còn bị GHI — và ghi cần chiều ngược GCALL (encode địa chỉ retail, không phải H2G). ~18 chỗ gán trực tiếp bằng tên hàm (giải được gọn, tra functions.csv lúc codemod) nhưng `duel_scene_battle.c`/`file_stream.c` gán qua biến cục bộ/tham số (đổi kiểu biến — dạng biến đổi MỚI, T1.3/T1.4/T1.5 chưa từng đổi kiểu biến cục bộ, chỉ field/global). Hỏi fen qua `AskUserQuestion`, fen chọn dừng ở phần literal, để phần biến cục bộ cho phiên sau. Chi tiết: `docs/macos/reports/m1-fn-table.md`. |
@@ -90,11 +92,20 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sách này càng ngắn càng tốt.
 | File | Thay đổi | Lý do | Task |
 |---|---|---|---|
+| `src/pc/platform/platform_common.c` | Thêm `#include "pc/compat/mcontext.h"`; thay `REG_EIP` trần bằng `MCONTEXT_PC`; bọc `#ifndef __APPLE__` quanh khối `timer_create`, đi thẳng xuống `setitimer` có sẵn trên macOS; `_XOPEN_SOURCE`/`_DARWIN_C_SOURCE`/pragma deprecate cho `__APPLE__` | ADR-09 | T1.8 |
+| `src/pc/debug/crash.c` | Thêm `#include "pc/compat/mcontext.h"`; thay `REG_EIP`/`REG_ESP`/`REG_EBP` trần bằng `MCONTEXT_PC/SP/FP`; nhánh `__APPLE__` dùng `pthread_get_stackaddr_np`/`pthread_get_stacksize_np` thay `pthread_getattr_np` (glibc); `_XOPEN_SOURCE`/`_DARWIN_C_SOURCE`/pragma deprecate | ADR-09 | T1.8 |
+| `src/pc/platform/paths.c` | Thêm nhánh `#elif defined(__APPLE__)` cho `Paths_UserDir` (Application Support); `Paths_ProgramDir` dùng `_NSGetExecutablePath` thay `readlink("/proc/self/exe",...)` trên `__APPLE__` | ADR-09 | T1.8 |
 | `src/pc/sdk/libgte.c` | Thêm `#include "pc/guest/gptr.h"`; bọc 6 hằng ép kiểu địa chỉ guest bằng `G2H`; 2 field đọc (`get_lw` nằm ở `libgte_extra.c`, xem dòng dưới); nén `DivideLevel.corner`/`unused_return`/`DividePolygon4.ot` dưới `#ifdef MEMORIES_LP64` | ADR-05 (2)/(3); xem Decision log + `docs/macos/reports/m1-codemod-stage2a.md` | T1.4a |
 | `src/pc/sdk/libgte_extra.c` | Thêm `#include "pc/guest/gptr.h"`; bọc 2 hằng ép kiểu + 2 field đọc (`coordinate->super`) bằng `G2H` | ADR-05 (2)/(3) | T1.4a |
 | `tools/pc/build_game32.py` | `NATIVE`'s glob `src/pc/guest/*.[cS]` loại tên có `_lp64.`/`_arm64.` | Phát hiện T1.7: glob này quét KHÔNG lọc, nên mọi file macOS-only cùng thư mục (đúng quy ước `*_lp64.*`/`*_arm64.*` CLAUDE.md đã cho phép) bị cuốn vào build i386, sẽ trùng symbol với `gptr.c`/`image.c` hoặc (file `.S` arm64) assembler i386 từ chối thẳng cú pháp. Là lỗ hổng có từ T1.1/T1.2 (`gptr_lp64.c`/`image_lp64.c`), chưa ai thấy vì máy này không có toolchain i386 Linux/Windows để tự chạy `build_game32.py` kiểm tra. Sửa cùng lúc với việc thêm `state_arm64.S` (T1.7) để không lặp lại lỗ hổng lần thứ 3. | T1.7 |
 
 ## Vấn đề mở / rủi ro
+- **T1.8: `mkdtemp` thiếu khai báo trên macOS, ảnh hưởng ít nhất 17 file test** (`fs_test.c`,
+  `texture_pack_test.c`, `controls_window_test.c`, `mods_test.c`, ... — `grep -rl mkdtemp tests/pc/`) —
+  cùng họ lỗi với `MAP_ANON`/`ucontext` (macOS ẩn dưới `_POSIX_C_SOURCE` nghiêm ngặt, cần thêm
+  `_DARWIN_C_SOURCE`). Khả năng cao là nguyên nhân một phần đáng kể trong 30 lỗi pre-existing đã theo
+  dõi từ T1.6. Sửa nhanh nhưng ảnh hưởng nhiều file ngoài phạm vi T1.8 đã duyệt — để dành phiên riêng.
+  Chi tiết: `docs/macos/reports/m1-platform-spike.md`.
 - **T1.6: ghi field GPTR_FN qua biến cục bộ/tham số trung gian — chưa có cơ chế.** `classify_write_fn`
   (codemod.py) chỉ xử lý được RHS là tên hàm literal (optionally ép kiểu) hoặc `0`; một biến cục bộ hay
   tham số hàm (có thể giữ nhiều ứng viên khác nhau tuỳ runtime) bị bỏ qua (không sửa, không dừng batch) —
@@ -152,6 +163,28 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - **Con trỏ host thật bị ép xuống `s32`/`u32` qua BIẾN CỤC BỘ rồi ép ngược — chưa có hướng xử lý** (phát hiện khi đo scope T1.4e, 2026-10-02; xem ADR-05 trong `ARCHITECTURE.md`, mục ngay sau mục 9). Khác offsetof-qua-NULL (ADR-05 mục 9, đã sửa): đây là con trỏ host THẬT (ví dụ `u8 *indices = D_800EAE88; ... (s32)indices + i`), cắt cụt bit cao thật dưới con trỏ 8-byte — không an toàn để chỉ bọc `(uintptr_t)` như mục 9. `transform_c_expressions` chỉ quét field struct (`MEMBER_REF_EXPR`), không quét biến cục bộ/tham số mang con trỏ, nên không có cơ chế hiện tại xử lý được. T1.5 (globals) KHÔNG giải quyết vấn đề này (`G2H()` vẫn trả về con trỏ host thật). Đo được **28/121 file đã "compile sạch" ở T1.4a-d** (riêng batch đã xong, ~23%, chưa đo hết 352 file T1.4f) có pattern này: `ai_fusion.c`, `ai_turn_action.c`, `func_80019CC8.c`, `func_8001B938.c`, `func_80020BE4.c`, `func_80027DF8.c`, `func_800289BC.c`, `func_8002ABB4.c`, `func_8002F4C0.c`, `func_800320BC.c`, `func_800323F8.c`, `func_800339D0.c`, `func_80033DB0.c`, `func_80034830.c`, `func_80036C14.c`, `func_8003A01C.c`, `func_8003DA40.c`, `func_8003DC1C.c`, `func_80045514.c`, `func_80046A08.c`, `func_80049138.c`, `func_80051A48.c`, `func_80052D2C.c`, `func_80058938.c`, `func_80059AA8.c`, `func_8005CEF0.c`, `func_80061008.c` (cộng `psyq/startup_data.c`, đã biết từ T1.4a vì lý do khác — xem dòng ở trên). Đã hỏi fen qua `AskUserQuestion`: fen chọn ghi nhận vào đây, không đào sâu/sửa ngay, tiếp tục T1.4e theo kế hoạch gốc. Các số liệu "compile sạch" trong `m1-codemod-stage2a/b/c/d.md` không còn phản ánh đúng trạng thái hiện tại của 28 file này — không rõ vì sao quy trình đo thủ công lúc đó (script không được lưu lại thành file, không đối chiếu lại được) không bắt được lỗi này; không giả định nguyên nhân, chỉ ghi nhận khác biệt. Chi tiết đo + ví dụ: `docs/macos/reports/m1-codemod-stage2e.md`.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-10-07 — **T1.8 (Platform macOS, xong trong phạm vi đã duyệt).** Khảo sát trước: acceptance đầy đủ
+  (cửa sổ+bàn phím+gamepad+âm thanh trong game thật) cần SDL3 build (T1.9)/build driver (T1.10), cả hai
+  chưa tồn tại — đề xuất spike độc lập thay thế, fen duyệt. Compile thử `platform_common.c`/`crash.c`
+  dưới cờ đầy đủ trước khi sửa (không đoán), lộ ra 2 API hoàn toàn không tồn tại trên macOS (không phải
+  chỉ thiếu macro hiển thị như ucontext): `pthread_getattr_np` (sửa bằng `pthread_get_stackaddr_np`/
+  `pthread_get_stacksize_np` của Apple) và `timer_create`/`SIGEV_THREAD_ID` (phát hiện quan trọng:
+  `platform_common.c` đã CÓ SẴN nhánh dự phòng `setitimer` đúng ý ADR-09, chỉ cần bọc `#ifndef __APPLE__`
+  quanh khối `timer_create`, không cần viết gì mới). Viết `mcontext.h` (PC/SP/FP, Linux `.gregs[]` vs
+  Darwin `->__ss.__pc/__sp/__fp`, xác nhận field name bằng compile thử thật). Sửa `paths.c`: thêm nhánh
+  Application Support, và (phát hiện giữa phiên khi đọc kỹ file, cùng phạm vi "paths.c cho macOS" đã
+  duyệt) `Paths_ProgramDir()`'s `readlink("/proc/self/exe",...)` không hoạt động trên macOS (không phải
+  lỗi compile, fail êm rồi rơi về "."), sửa bằng `_NSGetExecutablePath`. Xác minh Application Support
+  bằng chương trình nhỏ độc lập (không sửa `fs_test.c` — bị chặn bởi 1 lỗi `mkdtemp` macOS KHÁC,
+  pre-existing, ghi vào Vấn đề mở thay vì tự ý mở rộng sửa 17 file không liên quan). **Spike Cocoa:** cài
+  SDL3 qua Homebrew tạm (không commit, không phải bản pin T1.9), viết chương trình `mmap`+guard page+
+  `swapcontext` sang stack riêng (đúng kiến trúc T1.7) rồi `SDL_Init`+tạo cửa sổ+vòng lặp
+  `SDL_PollEvent` 600+ frame — chạy 3+ lần nhất quán, không crash/treo. Xác nhận Cocoa khởi tạo thật
+  (menu bar đổi tên app, tự tạo menu "Window") và cửa sổ thật tồn tại qua `CGWindowListCopyWindowInfo`
+  (không chụp được ảnh màn hình trực tiếp vì thiếu quyền Screen Recording trong sandbox agent — hạn chế
+  môi trường, không phải kiến trúc). **Kết luận: phương án A đủ dùng, không cần phương án B** — cập nhật
+  ADR-09. `ctest` toàn bộ: 30 lỗi pre-existing không đổi (so khớp TÊN). Chi tiết:
+  `docs/macos/reports/m1-platform-spike.md`.
 - 2026-10-07 — **T1.7 (VSync entry + stack game arm64, xong trong phạm vi đã duyệt).** Đọc trước:
   `state_i386.S`, `state.h`, `state.c` (1052 dòng), ADR-08/09. Compile thử `state.c` dưới
   `-DMEMORIES_LP64 -arch arm64` TRƯỚC khi sửa để đo lỗi thật (không đoán): thiếu `_XOPEN_SOURCE` cho

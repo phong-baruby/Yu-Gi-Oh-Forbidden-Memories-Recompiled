@@ -1,4 +1,17 @@
 #define _GNU_SOURCE
+/* Same reasoning as src/pc/guest/state.c's own copy of this (T1.7): macOS's
+ * <ucontext.h> (pulled in below) needs _XOPEN_SOURCE before anything
+ * includes it transitively, which then hides MAP_ANON/pthread bits this
+ * file does not use but _DARWIN_C_SOURCE restores regardless, and the
+ * ucontext functions themselves are also marked deprecated (removed from
+ * POSIX in issue 7, still correct on arm64) -- would otherwise be -Werror
+ * under this project's own compile flags. _GNU_SOURCE above already
+ * exposes everything this file needs on Linux, so this is Apple-only. */
+#ifdef __APPLE__
+#define _XOPEN_SOURCE 600
+#define _DARWIN_C_SOURCE
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "pc/compat/fs.h"
 #include "crash.h"
 #include "log.h"
@@ -21,6 +34,7 @@
 #include "pc/platform/win32.h"
 #else
 #include <ucontext.h>
+#include "pc/compat/mcontext.h"
 #endif
 
 #ifdef _WIN32
@@ -217,8 +231,7 @@ void Crash_HandleSignal(int number, siginfo_t *info, void *context)
     struct sigaction action;
     if (reporting++) _exit(128 + number);
     report_fatal("signal", (unsigned long)number, info ? (uintptr_t)info->si_addr : 0,
-                 (uintptr_t)user->uc_mcontext.gregs[REG_EIP], (uintptr_t)user->uc_mcontext.gregs[REG_ESP],
-                 (uintptr_t)user->uc_mcontext.gregs[REG_EBP]);
+                 MCONTEXT_PC(user), MCONTEXT_SP(user), MCONTEXT_FP(user));
     memset(&action, 0, sizeof(action));
     action.sa_handler = SIG_DFL;
     sigemptyset(&action.sa_mask);
@@ -236,15 +249,30 @@ void Crash_Init(void)
     static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT};
     stack_t stack;
     struct sigaction action;
+#ifndef __APPLE__
     pthread_attr_t attributes;
     void *address;
     size_t size;
+#endif
     unsigned i;
     Crash_ChooseReportDir();
     stack.ss_sp = alternate_stack;
     stack.ss_size = sizeof(alternate_stack);
     stack.ss_flags = 0;
     sigaltstack(&stack, NULL);
+#ifdef __APPLE__
+    /* pthread_getattr_np/pthread_attr_getstack (glibc) do not exist on
+     * macOS; its own equivalent (also non-portable, but Apple's own) gives
+     * the stack's top and size directly, no pthread_attr_t needed. The
+     * stack grows down from there, same as glibc's low-address form, just
+     * computed the other way around. */
+    {
+        void *top = pthread_get_stackaddr_np(pthread_self());
+        size_t size = pthread_get_stacksize_np(pthread_self());
+        main_stack_high = (uintptr_t)top;
+        main_stack_low = main_stack_high - size;
+    }
+#else
     if (!pthread_getattr_np(pthread_self(), &attributes)) {
         if (!pthread_attr_getstack(&attributes, &address, &size)) {
             main_stack_low = (uintptr_t)address;
@@ -252,6 +280,7 @@ void Crash_Init(void)
         }
         pthread_attr_destroy(&attributes);
     }
+#endif
     memset(&action, 0, sizeof(action));
     action.sa_sigaction = installed_handler;
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -301,9 +330,9 @@ void Crash_ReportHang(void *context_pointer)
     Win32_ContextRegisters(context_pointer, &eip, &esp, &ebp);
 #else
     ucontext_t *user = context_pointer;
-    eip = (uintptr_t)user->uc_mcontext.gregs[REG_EIP];
-    esp = (uintptr_t)user->uc_mcontext.gregs[REG_ESP];
-    ebp = (uintptr_t)user->uc_mcontext.gregs[REG_EBP];
+    eip = MCONTEXT_PC(user);
+    esp = MCONTEXT_SP(user);
+    ebp = MCONTEXT_FP(user);
 #endif
     report_fd = -1;
     snprintf(path, sizeof(path), "%s/hang-%ld.txt", Crash_ReportDir, (long)getpid());

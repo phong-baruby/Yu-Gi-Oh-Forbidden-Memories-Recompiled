@@ -5,6 +5,12 @@
  * on every thread they create. Windows interrupts the main thread from a
  * timer thread instead (win32.c). */
 #define _GNU_SOURCE
+/* Same reasoning as src/pc/guest/state.c's own copy of this (T1.7). */
+#ifdef __APPLE__
+#define _XOPEN_SOURCE 600
+#define _DARWIN_C_SOURCE
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "pc/compat/fs.h"
 #include "platform.h"
 #include "pc/guest/state.h"
@@ -15,6 +21,7 @@
 #include "pc/sdk/display.h"
 #include "pc/debug/profile.h"
 #include "pc/compat/signal.h"
+#include "pc/compat/mcontext.h"
 #include "pc/audio/spu.h"
 #include "controls_runtime.h"
 #include "settings.h"
@@ -191,7 +198,7 @@ static void on_alarm(int number, siginfo_t *info, void *context)
     ucontext_t *user = context;
     (void)number;
     (void)info;
-    on_tick((uintptr_t)user->uc_mcontext.gregs[REG_EIP], context);
+    on_tick(MCONTEXT_PC(user), context);
 }
 #endif
 
@@ -205,9 +212,11 @@ int Platform_StartTimers(void (*tick)(uint64_t, uint64_t), void (*vblank)(void))
 {
 #ifndef _WIN32
     struct sigaction action;
+#ifndef __APPLE__
     struct sigevent event;
     struct itimerspec spec;
     timer_t timer;
+#endif
 #endif
     tick_handler = tick;
     vblank_handler = vblank;
@@ -243,6 +252,7 @@ int Platform_StartTimers(void (*tick)(uint64_t, uint64_t), void (*vblank)(void))
     if (sigaction(SIGALRM, &action, NULL)) {
         return -1;
     }
+#ifndef __APPLE__
     memset(&event, 0, sizeof(event));
     event.sigev_notify = SIGEV_THREAD_ID;
     event.sigev_signo = SIGALRM;
@@ -252,6 +262,15 @@ int Platform_StartTimers(void (*tick)(uint64_t, uint64_t), void (*vblank)(void))
     if (timer_create(CLOCK_MONOTONIC, &event, &timer) == 0 && timer_settime(timer, 0, &spec, NULL) == 0) {
         return 0;
     }
+#endif
+    /* ADR-09: macOS has neither timer_create nor SIGEV_THREAD_ID at all
+     * (not just "falls back here on failure" the way the Linux path above
+     * can) -- goes straight to the process-wide setitimer/SIGALRM this
+     * block is everywhere else only a fallback for. Still lands on the
+     * main thread specifically, same as the thread-directed timer would:
+     * every other thread this process creates blocks SIGALRM (this
+     * function's own header comment), so a process-directed signal has
+     * nowhere else to go. */
     {
         struct itimerval fallback;
         fallback.it_interval.tv_sec = fallback.it_value.tv_sec = 0;
