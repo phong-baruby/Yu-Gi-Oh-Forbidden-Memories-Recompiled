@@ -119,7 +119,8 @@ static u16 move_build_deck_cursor(int pad, int step)
         if (list->entries[row].flags == 0) continue;
         first = page_for(row, list->cursor, rows, BUILD_DECK_PAGE_ROWS);
         list->cursor = (s8)(row - first);
-        list->cursor_box->field_30.h.field_32 = list->cursor * BUILD_DECK_ROW_HEIGHT + BUILD_DECK_ROW_TOP;
+        ((DisplayObject *)G2H(list->cursor_box))->field_30.h.field_32 =
+            list->cursor * BUILD_DECK_ROW_HEIGHT + BUILD_DECK_ROW_TOP;
         if (first != list->first) {
             list->first = list->first_target = (s16)first;
             func_80031E04(list, BUILD_DECK_PAGE_ROWS);

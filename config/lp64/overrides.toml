@@ -1856,3 +1856,20 @@ ADR-04/T1.6, not yet built).
 """
 old = "callback = D_8009B458->field_050C;"
 new = "callback = (void (*)(void))G2H(((SDSecondaryState *)G2H(D_8009B458))->field_050C);"
+
+[[override]]
+file = "game/model_load_step.c"
+pattern = "gaddr-field-array-element-then-chain"
+reason = """
+`p->field_1E0[i]->sid = selected;` -- field_1E0 is `GPTR(ModelSlotPart)
+field_1E0[N]` (model.h), so `p->field_1E0[i]` reads one gaddr array
+element, then `->sid` chains off it. transform_c_expressions's
+ARRAY_SUBSCRIPT_EXPR branch (the `x.f[i]` case) only classifies a plain
+assignment-read/VAR_DECL/explicit-assignment-LHS shape for the whole
+subscript expression -- a further `->` chained onto it (this exact shape)
+is not one of those, so it falls through unclassified (found while
+continuing T1.10, 2026-10-07, see docs/macos/PROGRESS.md: only one site
+in scope, not worth generalizing the branch for).
+"""
+old = "p->field_1E0[i]->sid = selected;"
+new = "((ModelSlotPart *)G2H(p->field_1E0[i]))->sid = selected;"

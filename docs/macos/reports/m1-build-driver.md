@@ -137,6 +137,45 @@ trúc thật, biết từ lâu, quy mô đáng kể (T1.4e's "con trỏ host th�
 pointer-array global"), cộng 1 việc phụ thuộc mới (`libpng`/`fontconfig`, ngoài ADR-10). Đề xuất: KHÔNG
 tiếp tục đào sâu trong T1.10 nữa — mỗi khoảng trống xứng đáng một task riêng có plan/acceptance riêng.
 
+## Tiếp tục phiên thứ 3 (2026-10-07) — làm Gap B (DeclRefExpr/global pointer ở chỗ dùng)
+
+Fen chọn làm Gap B trước (phạm vi nhỏ hơn, cơ chế rõ hơn). Khảo sát kỹ hơn cho thấy chẩn đoán ban đầu
+("DeclRefExpr chưa được quét") **chưa đúng hoàn toàn** — xác minh bằng cách đọc AST thật (không đoán):
+
+- Hầu hết cách dùng một pointer global đã wrap (gán vào biến, ép kiểu, truyền hàm) **đã hoạt động đúng**
+  từ T1.5 phiên 2: global là macro giãn ra `.value` — một `MEMBER_REF_EXPR` gaddr y hệt field GPTR, nên
+  `transform_c_expressions`'s cơ chế quét hiện có (chỉ nhắm `MEMBER_REF_EXPR`) đã xử lý đúng.
+- Lỗ hổng THẬT chỉ xảy ra khi `.value` bị nối tiếp bằng `->` (`NAME->field`, `NAME[idx]->field`) — đây là
+  LỖI KIỂU THẬT tại thời điểm codemod tự parse (`gaddr` không có field), khiến **libclang error-recovery
+  không tạo cursor `.value` nào cả** cho đúng chỗ dùng đó (xác nhận bằng cách in toàn bộ cursor `.value`
+  trong file: mọi chỗ dùng khác của CÙNG global đều có cursor thật, riêng chỗ có `->` nối tiếp thì không).
+  Cơ chế quét dựa trên cursor không có gì để phân loại.
+- Sửa bằng 1 hàm quét-chữ (`codemod.py`'s `fix_global_pointer_chains`, cùng phong cách
+  `fix_mach_o_sections`/`fix_offsetof_casts` — chạy SAU `transform_c_expressions`, chỉ bắt đúng hình dạng
+  `NAME->`/`NAME[idx]->` còn sót). **Thử rộng hơn** (bắt luôn `NAME[idx]` không cần `->` theo sau) đã gây
+  **double-wrap thật** ở 1 file (`func_80029EC4.c`) vì hình dạng đó (không có `->` sau) đã được
+  `ARRAY_SUBSCRIPT_EXPR`'s dispatch có sẵn xử lý đúng rồi — phải thu hẹp lại đúng phạm vi `->`-only.
+- **Thử thêm 1 nhánh CALL_EXPR cho `x.f[i]` truyền làm đối số hàm** (để sửa `func_8004DE24.c`'s
+  `GsSortFastSprite(&sprite, D_800E9D90[3], ...)`) — gây lỗi MỚI ở 5 file khác (`passing 'void *' to
+  parameter of type 'gaddr'`): giả định "tham số luôn là con trỏ" (đúng cho field thường) KHÔNG đúng cho
+  mọi lời gọi hàm với `x.f[i]`. **Đã revert**, không đủ thời gian thêm kiểm tra kiểu tham số thật sự.
+- Thêm 1 override.toml cho `model_load_step.c` (1 điểm duy nhất, `p->field_1E0[i]->sid` — cùng họ lỗi
+  nhưng là FIELD struct thường, không phải global, quy mô quá nhỏ để mở rộng dispatch chung).
+
+**Kết quả thật**: `card_browse.c`/`rank_meter.c` (file native, sửa tay) hết lỗi hoàn toàn.
+`duel_result_runtime.c`/`func_8004DE24.c`/`model_load_step.c` hết đúng lỗi "member reference gaddr" ban
+đầu nhưng **mỗi file còn lỗi KHÁC, độc lập** (chủ yếu rơi vào Gap A — con trỏ host thật ép xuống số
+nguyên) — tổng số file compile-lỗi không đổi nhiều (153/618, so với 149 lúc bắt đầu phiên này) nhưng đây
+không phải do quay lui: đã xác minh bằng diff danh sách file lỗi, không có file nào MỚI thật sự regress
+so với baseline, chỉ là các file đó vẫn lỗi (vì lý do khác) dù gap B đã hết.
+
+**Kết luận: Gap B phức tạp hơn đánh giá ban đầu — không phải 1 lỗ hổng gọn mà là NHIỀU hình dạng hẹp khác
+nhau** (chain sau global scalar, chain sau global mảng subscript, chain sau field mảng subscript, call-
+argument của field mảng subscript...), mỗi hình dạng cần xác minh riêng bằng AST thật trước khi sửa (2
+lần thử mở rộng đã gây regression thật, phải revert). Đã dừng lại ở phần đã xác minh AN TOÀN (chỉ còn
+`->` chain cho global, đã test kỹ). Gap A (con trỏ host thật ép xuống s32/u32, ~189 lỗi, áp đảo) vẫn CHƯA
+đụng tới — đây mới là việc lớn thật sự còn lại.
+
 ## Đề xuất cho phiên sau (không làm trong phiên này)
 
 1. Rà 154 file compile-lỗi (lý do thật, không phải `-w` nữa): nhiều khả năng trùng nhóm đã biết (apfn,

@@ -963,6 +963,69 @@ def fix_offsetof_casts(data):
     return OFFSETOF_CAST_RE.sub(rb'(u32)(uintptr_t)&', data)
 
 
+def fix_global_pointer_chains(data, globals_map):
+    """`NAME->member` / `NAME[idx]->member` -> `((pointee *)G2H(NAME))->member`
+    / `((pointee *)G2H(NAME[idx]))->member`, for every "pointer"/"pointer-
+    array" ADR-03 global (T1.5 phien 2/3's `globals_map`) still followed by
+    a literal `->` after transform_c_expressions has already run.
+
+    Found while continuing T1.10 (2026-10-07): most uses of a wrapped
+    pointer global (`(T *)G2H(NAME)`, a VAR_DECL initializer, a plain cast)
+    ARE already caught by transform_c_expressions's MEMBER_REF_EXPR scan --
+    `NAME` is a macro expanding to `(*(NAME_global_t *)G2H(addr)).value`,
+    and `.value` parses as an ordinary gaddr-typed MEMBER_REF_EXPR, same as
+    any GPTR struct field. But when `.value` is immediately followed by a
+    further `->member` (`NAME->member`, a genuine type error at THIS parse
+    stage: `gaddr` has no member `member`), clang's error recovery does not
+    construct a MEMBER_REF_EXPR node for `.value` at all for that one call
+    site -- confirmed empirically (walking the AST directly: every other
+    use of the same global in the same file gets a real `.value` cursor;
+    this exact shape gets none) -- so transform_c_expressions's cursor-based
+    scan has nothing to classify. A pure text sweep, run after it, is the
+    reliable way to still catch this one shape: fix_mach_o_sections and
+    fix_offsetof_casts already establish the same pattern (project-wide,
+    text-only, for a hazard the AST pass structurally cannot see).
+
+    Does not need to worry about re-matching an already-fixed site: once
+    rewritten, `NAME` is followed by `))->` or `)))->`, never a bare `->`,
+    so this is naturally idempotent and safe to run unconditionally on
+    every *.c file's final text, same as the two functions above."""
+    if not globals_map:
+        return data
+
+    def pointee_cast(info):
+        return info["pointee"] if info["pointee"].endswith("*") else f"{info['pointee']} *"
+
+    for name, info in globals_map.items():
+        if info["kind"] != "pointer":
+            continue
+        cast = pointee_cast(info)
+        if not info["is_array"]:
+            # Only the `->` chain shape (see docstring): every other use of
+            # a scalar pointer global already gets a real `.value`
+            # MEMBER_REF_EXPR cursor and is handled by transform_c_expressions
+            # itself -- matching unconditionally here would double-wrap it.
+            pattern = re.compile(rb'\b' + re.escape(name.encode()) + rb'\b(\s*)->')
+            data = pattern.sub(f"(({cast})G2H({name})".encode() + rb')\1->', data)
+        else:
+            # Same "->" -only scope as the scalar case and for the same
+            # reason: transform_c_expressions's SECOND parse (parse_code,
+            # against the already-transformed header tree) sees `NAME[idx]`
+            # as an ordinary gaddr-typed ARRAY_SUBSCRIPT_EXPR over the
+            # macro's `.value` member -- its own dispatch already handles a
+            # bare `NAME[idx]` correctly (VAR_DECL/assignment grandparent
+            # branches). Re-matching every occurrence here would double-
+            # wrap those (found: func_80029EC4.c's `ot = D_800E9D90[3];`
+            # came out wrapped twice). Only a further `->` chained onto the
+            # subscript hits the same error-recovery cursor loss as the
+            # scalar case.
+            pattern = re.compile(rb'\b' + re.escape(name.encode()) + rb'\[([^\[\]]+)\](\s*)->')
+            data = pattern.sub(lambda m, cast=cast, name=name:
+                               f"(({cast})G2H({name}[".encode() + m.group(1) + b"]))" + m.group(2) + b"->",
+                               data)
+    return data
+
+
 def load_function_addresses(path):
     """name -> retail address (int), from config/slus_01411/functions.csv --
     T1.6/ADR-04: writing a literal decompiled function name into a GPTR_FN
@@ -1536,7 +1599,14 @@ def transform_c_expressions(data, tu, filename, function_addresses=None):
             # Anything else reading x.f[i] (a cast, a call argument, a plain
             # comparison, ...): not seen yet in this batch -- falls through
             # to the catch-all below rather than guess, same as everywhere
-            # else in this function.
+            # else in this function. (A CALL_EXPR grandparent branch was
+            # tried here -- mirroring the plain field's own CALL_EXPR case,
+            # unconditional G2H -- but found wrong where the callee's
+            # parameter is itself gaddr-typed, not a pointer: unlike the
+            # plain-field case, that assumption does not hold for every
+            # x.f[i] calling convention seen. Reverted rather than add
+            # parameter-type checking under time pressure; see
+            # docs/macos/PROGRESS.md.)
             continue
 
         # A field called directly as a function (`x.f(args)`, ADR-05 (6)):
@@ -1630,6 +1700,7 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
     if tu is None:
         sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
     out_data, count = transform_c_expressions(data, tu, os.path.basename(path), function_addresses)
+    out_data = fix_global_pointer_chains(out_data, globals_map)
     with open(out_path, "wb") as handle:
         handle.write(out_data)
     return count
