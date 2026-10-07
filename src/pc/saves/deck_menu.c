@@ -19,7 +19,11 @@
 #include <string.h>
 
 extern u8 D_8009B26C;            /* the active mode (main_mode_state.h) */
+#ifdef MEMORIES_LP64
+#define gMain_bMenuID (*(unsigned char *)G2H(0x80184594u))
+#else
 extern u8 gMain_bMenuID;         /* the main menu's entry: 0-4 the title's, 5-10 a loaded game's */
+#endif
 extern u32 D_801D9000[];         /* gText_adwGlyphCodeTable: glyph -> Shift-JIS, low half */
 extern s32 gDuel_adwCardStats[]; /* ATK in bits 0-8 (x10), type in 26-30 */
 void SD_SEPlayFull(u32 id);
@@ -33,8 +37,13 @@ unsigned Memories_PresentedFrames(void);
 #define MODE_FREE_DUEL 6
 #define MODE_DUEL 3
 #define MODE_BUILD_DECK 7
+#ifdef MEMORIES_LP64
+#define D_8009B26E (*(unsigned char *)G2H(0x8009B26Eu))
+#define gDuel_bEffectState (*(unsigned char *)G2H(0x8009B254u))
+#else
 extern u8 D_8009B26E; /* main_run_duel.c: Main_RunDuel's step, 0x80 once set up */
 extern u8 gDuel_bEffectState; /* duel_effect.h: the card viewer and the like */
+#endif
 #define MODE_MENU 8
 
 /* The campaign's card shop (the only way to Build Deck in the present, which

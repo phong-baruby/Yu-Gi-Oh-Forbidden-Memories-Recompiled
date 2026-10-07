@@ -19,7 +19,12 @@
 #include "game/display_object.h"
 #include <stdio.h>
 
-extern unsigned char D_8009B26C, D_8009B26E;
+extern unsigned char D_8009B26C;
+#ifdef MEMORIES_LP64
+#define D_8009B26E (*(unsigned char *)G2H(0x8009B26Eu))
+#else
+extern unsigned char D_8009B26E;
+#endif
 
 /* Scene phases (gDuel_apfnSceneStateHandler) from the first draw to the turn
  * switch; 12 on are the outro and the result screens, which show the rank.

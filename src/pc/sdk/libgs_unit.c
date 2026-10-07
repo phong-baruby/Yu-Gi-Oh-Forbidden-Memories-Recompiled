@@ -12,7 +12,12 @@
 
 extern int D_800FE0C8;                                  /* frame counter: coordinate cache stamp */
 extern MATRIX D_800FE0E8; /* the three light directions */
-extern MATRIX D_800FE128, D_800FE148, D_800FE168, D_800FE188; /* GsLIGHTWSMATRIX, GsWSMATRIX, GsIDMATRIX, GsIDMATRIX2 */
+extern MATRIX D_800FE128, D_800FE168, D_800FE188; /* GsLIGHTWSMATRIX, GsIDMATRIX, GsIDMATRIX2 */
+#ifdef MEMORIES_LP64
+#define D_800FE148 (*(MATRIX *)G2H(0x800FE148u))
+#else
+extern MATRIX D_800FE148; /* GsWSMATRIX */
+#endif
 extern u32 D_800FE240;                                  /* output packet pointer */
 extern u32 D_800FE278[];                                /* coordinate walk stack */
 extern u32 D_80099E48, D_80099E4C, D_80099E50;          /* scan: next block, cursor, primitive header */

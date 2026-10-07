@@ -10,8 +10,13 @@
 #include <stdio.h>
 
 extern unsigned char D_8009B26C; /* main_mode_state.h: the active mode, 0x80 once it runs */
+#ifdef MEMORIES_LP64
+#define D_8009B26E (*(unsigned char *)G2H(0x8009B26Eu))
+#define D_8009AF9A (*(signed char *)G2H(0x8009AF9Au))
+#else
 extern unsigned char D_8009B26E; /* Main_RunCredits: its phase, 0x80 once the phase started */
 extern signed char D_8009AF9A;   /* -2 once the credits presentation is complete */
+#endif
 
 #define MAIN_MODE_MENU 8
 #define MAIN_MODE_CREDITS 15

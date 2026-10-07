@@ -9,8 +9,15 @@
 #include "game/sound.h"
 #include <stdio.h>
 
-extern u8 D_8009B268, D_8009B26C, D_8009B26D;
+extern u8 D_8009B26C;
+#ifdef MEMORIES_LP64
+#define D_8009B268 (*(unsigned char *)G2H(0x8009B268u))
+#define D_8009B26D (*(unsigned char *)G2H(0x8009B26Du))
+#define D_800E9DC0 (*(int (*)[12])G2H(0x800E9DC0u))
+#else
+extern u8 D_8009B268, D_8009B26D;
 extern int D_800E9DC0[];
+#endif
 void Psx_longjmp(int *env, int value);
 
 void TitleJump_Execute(void)

@@ -11,8 +11,14 @@
 
 extern u8 D_8009B26C;
 extern u16 D_8009B27C;
+#ifdef MEMORIES_LP64
+#define gDialog_bChoiceEnabled (*(unsigned char *)G2H(0x8009B336u))
+#define gDialog_bChoiceCount (*(signed char *)G2H(0x8009B345u))
+#else
 extern u8 gDialog_bChoiceEnabled;
-extern s8 gDialog_bChoiceCount, gDialog_bChoice;
+extern s8 gDialog_bChoiceCount;
+#endif
+extern s8 gDialog_bChoice;
 #define MODE_CAMPAIGN 2
 #define SCRIPT_COMMAND_SHOP 13
 

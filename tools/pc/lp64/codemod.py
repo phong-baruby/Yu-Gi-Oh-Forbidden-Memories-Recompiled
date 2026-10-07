@@ -795,12 +795,14 @@ def transform_bytes(data, tu, filename, globals_map=None):
 
 
 def load_globals(path):
-    """name -> {address, is_array, pointee, array_size} for every
-    "pointer"/"pointer-array" global tools/pc/lp64/gen_globals.py measured
-    (its `canonical` section -- T1.5 stage 1, docs/macos/reports/
-    m1-globals-stage1.md). [] (not {}; callers only ever iterate items())
-    if the census has not been generated yet, so this tool stays usable
-    without it, same spirit as load_overrides's missing-file fallback."""
+    """name -> {kind, address, is_array, pointee, array_size} for every
+    global tools/pc/lp64/gen_globals.py's `canonical` section covers: kind
+    "pointer"/"pointer-array" (T1.5 phien 2, docs/macos/reports/
+    m1-globals-stage1.md) and kind "plain" (T1.5 phien 3 -- every other
+    global, scalar or array, with no pointer anywhere in its own type).
+    [] (not {}; callers only ever iterate items()) if the census has not
+    been generated yet, so this tool stays usable without it, same spirit
+    as load_overrides's missing-file fallback."""
     if not os.path.exists(path):
         return {}
     with open(path) as handle:
@@ -809,28 +811,55 @@ def load_globals(path):
 
 def global_wrapper_text(name, info, original):
     """The `#ifdef MEMORIES_LP64 ... #else <original> #endif` replacement
-    for one global variable declaration (ADR-03): a one-field struct
-    wrapping a `gaddr`/`gaddr[N]` "value" member, so every use of `name`
-    reaches that member through an ordinary MEMBER_REF_EXPR (`.value`) --
-    the exact AST shape transform_c_expressions already classifies for a
-    GPTR struct field, reused here completely unmodified (verified by
-    prototype against ordering_tables.h's D_800E9D90, see
-    docs/macos/reports/m1-globals-stage1.md: dereferencing straight to the
-    retail pointer type left `sizeof` wrong -- LP64's real pointers are
-    twice retail's 4-byte slot; dereferencing to `gaddr` through a named
-    field is both the right size and, for free, the right classification
-    behavior). `original` is kept verbatim in the #else branch, byte for
-    byte, so the non-LP64 build is untouched.
+    for one global variable declaration (ADR-03). Two kinds, per
+    gen_globals.py's `canonical` entry (`info["kind"]`):
 
-    The member is written as `GPTR(pointee) value;`, not pre-expanded to
-    `gaddr value;` -- field_pointee's own text-regex pointee-type recovery
-    (used by transform_c_expressions whenever a dereference/chain needs to
-    know what real pointer type to cast back to) reads this exact
-    declaration's SOURCE TEXT for a literal `GPTR(T)`/`GPTR_FN(T)` call, the
-    same convention every other GPTR struct field in this codebase follows
-    (T1.3) -- writing the already-macro-expanded `gaddr` here directly would
-    erase T before that lookup ever runs, the same information loss GPTR(T)
-    itself exists to avoid everywhere else."""
+    "pointer" (the global itself is a pointer/pointer-array, T1.5 phien 2):
+    a one-field struct wrapping a `gaddr`/`gaddr[N]` "value" member, so
+    every use of `name` reaches that member through an ordinary
+    MEMBER_REF_EXPR (`.value`) -- the exact AST shape
+    transform_c_expressions already classifies for a GPTR struct field,
+    reused here completely unmodified (verified by prototype against
+    ordering_tables.h's D_800E9D90, see docs/macos/reports/
+    m1-globals-stage1.md: dereferencing straight to the retail pointer type
+    left `sizeof` wrong -- LP64's real pointers are twice retail's 4-byte
+    slot; dereferencing to `gaddr` through a named field is both the right
+    size and, for free, the right classification behavior). The member is
+    written as `GPTR(pointee) value;`, not pre-expanded to `gaddr value;`
+    -- field_pointee's own text-regex pointee-type recovery (used by
+    transform_c_expressions whenever a dereference/chain needs to know what
+    real pointer type to cast back to) reads this exact declaration's
+    SOURCE TEXT for a literal `GPTR(T)`/`GPTR_FN(T)` call, the same
+    convention every other GPTR struct field in this codebase follows
+    (T1.3) -- writing the already-macro-expanded `gaddr` here directly
+    would erase T before that lookup ever runs, the same information loss
+    GPTR(T) itself exists to avoid everywhere else.
+
+    "plain" (no pointer anywhere in the global's own type, T1.5 phien 3,
+    2026-10-07 -- ADR-03's own text already said this needs no AST work):
+    a direct dereferencing macro, no struct/typedef at all --
+    `#define name (*(T *)G2H(addr))` for a scalar, `(*(T (*)[N])G2H(addr))`
+    for an array of known size. Skipping the struct/typedef on purpose:
+    unlike the pointer kind, this text is identical at every declaration
+    site of the same name (header's extern, .c's real definition), so
+    nothing here needs the pointer kind's has_definition exclusion -- a
+    macro redefined with an identical token sequence is explicitly allowed
+    (C11 6.10.3p2), where two separately-written anonymous struct types of
+    the same typedef name are not, even if structurally identical.
+
+    `original` is kept verbatim in the #else branch, byte for byte, so the
+    non-LP64 build is untouched either way."""
+    if info["kind"] == "plain":
+        if info["is_array"]:
+            size_text = f"{info['array_size']}" if info["array_size"] is not None else ""
+            cast = f"(*({info['pointee']} (*)[{size_text}])G2H(0x{info['address']:08X}u))"
+        else:
+            cast = f"(*({info['pointee']} *)G2H(0x{info['address']:08X}u))"
+        return (f"#ifdef MEMORIES_LP64\n"
+                f"#define {name} {cast}\n"
+                f"#else\n"
+                f"{original}\n"
+                f"#endif").encode("utf-8")
     if info["is_array"]:
         size_text = f"[{info['array_size']}]" if info["array_size"] is not None else "[]"
         member = f"GPTR({info['pointee']}) value{size_text};"
@@ -847,9 +876,10 @@ def global_wrapper_text(name, info, original):
 
 def collect_global_edits(data, tu, filename, globals_map):
     """(start, end, replacement) edits for every top-level VAR_DECL in
-    `filename` whose name is one of globals_map's known ADR-03
-    pointer/pointer-array globals -- declared `extern`, tentative, or with
-    a real initializer, all three uniformly (the initializer, if any,
+    `filename` whose name is one of globals_map's known ADR-03 globals
+    (pointer/pointer-array, T1.5 phien 2, or plain, T1.5 phien 3) --
+    declared `extern`, tentative, or with a real initializer, all three
+    uniformly (the initializer, if any,
     becomes dead: under LP64 this global has no real storage of its own
     left to initialize, and its retail value already lives in guest RAM
     from the PS-X EXE's own load, docs/macos/reports/m1-globals-stage1.md).

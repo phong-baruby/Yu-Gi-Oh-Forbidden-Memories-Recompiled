@@ -15,11 +15,20 @@ extern short D_800FE030[2], D_800FE034[2]; /* display buffer x[2], y[2] */
 extern short D_800FE038[2], D_800FE03C[2]; /* offset-mode copies */
 extern short D_800FE040[2];                /* GsSetOrign */
 extern DRAWENV D_800FE048;                 /* GsDRAWENV */
+#ifdef MEMORIES_LP64
+#define D_800FE0A8 (*(DISPENV *)G2H(0x800FE0A8u))
+#else
 extern DISPENV D_800FE0A8;                 /* GsDISPENV */
+#endif
 extern short D_800FE0BC, D_800FE0BE;       /* offset applied through the GTE */
 extern RECT D_800FE0C0;                    /* CLIP2 */
 extern int D_800FE0C8;                     /* frame counter, never zero */
-extern short D_800FE0CC, D_800FE0CE;       /* active buffer, GsOFSGPU flag */
+extern short D_800FE0CE;                   /* GsOFSGPU flag */
+#ifdef MEMORIES_LP64
+#define D_800FE0CC (*(short *)G2H(0x800FE0CCu))
+#else
+extern short D_800FE0CC;                   /* active buffer */
+#endif
 extern int D_800FE0D0, D_800FE0D4;         /* width, height */
 extern int D_800FE0D8, D_800FE0DC, D_800FE0E0;
 extern u8 D_800FE010[0x20];

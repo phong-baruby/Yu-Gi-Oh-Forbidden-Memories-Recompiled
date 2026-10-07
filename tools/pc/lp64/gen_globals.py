@@ -96,10 +96,14 @@ def type_shape(field_type):
     if canonical.kind in (cindex.TypeKind.CONSTANTARRAY, cindex.TypeKind.INCOMPLETEARRAY):
         element = canonical.get_array_element_type()
         element_canonical = element.get_canonical()
+        size = canonical.get_array_size() if canonical.kind == cindex.TypeKind.CONSTANTARRAY else None
         if element_canonical.kind == cindex.TypeKind.POINTER:
-            size = canonical.get_array_size() if canonical.kind == cindex.TypeKind.CONSTANTARRAY else None
             return "pointer-array", canonical.spelling, element_canonical.get_pointee().spelling, size
-        return "plain", canonical.spelling, None, None
+        # T1.5 phien 3: a plain (non-pointer) array also needs its element
+        # type/size reported, not just None -- codemod.py's plain-global
+        # wrapper (ADR-03's direct macro, no GPTR) casts to a pointer-to-
+        # array-of-element, which needs both to build the cast text.
+        return "plain", canonical.spelling, element.spelling, size
     if canonical.kind == cindex.TypeKind.RECORD:
         decl = canonical.get_declaration()
         for field in decl.get_children():
@@ -227,9 +231,56 @@ def main():
             continue
         sizes = [h["array_size"] for h in hits if h["array_size"] is not None]
         canonical[name] = {
+            "kind": "pointer",
             "address": addresses[name],
             "is_array": name in classified["pointer-array"],
             "pointee": pointee,
+            "array_size": max(sizes) if sizes else None,
+        }
+
+    # T1.5 phien 3 (2026-10-07): "global data thuan" -- ADR-03's own text
+    # already says this needs no struct/typedef trick, just a direct
+    # dereferencing macro (codemod.py's plain_global_wrapper_text), so
+    # unlike the pointer loop above there is no has_definition exclusion
+    # here: the same macro TEXT (not a typedef) at both the header's extern
+    # site and the .c's real-definition site is a harmless identical-token
+    # redefinition (C11 6.10.3p2), not two incompatible anonymous struct
+    # types. An array whose every declaration leaves its size unstated
+    # (`T name[]` everywhere, never `T name[N]`) is excluded -- a pointer-
+    # to-incomplete-array cast has no settled C spelling to build the macro
+    # from; found while building T1.10's build driver, see
+    # docs/macos/PROGRESS.md.
+    # "plain" only groups declarations by SHAPE (type_shape's return value),
+    # not by exact type -- two sites can both be "plain" while one calls the
+    # same address `unsigned char D_8009AF5C[]` and another
+    # `OptionsLayoutPositionData D_8009AF5C` (a named struct, not even an
+    # array). Picking hits[0]'s type arbitrarily would silently wrap the
+    # name with whichever site happened to be scanned first, wrong for
+    # every other site that disagrees. Normalizing away array-size digits,
+    # const and volatile first (benign: `T[]` vs `T[12]` is the same macro
+    # with the larger size picked below, same as the no-size check above)
+    # isolates the real conflicts -- found while building T1.10's build
+    # driver, see docs/macos/PROGRESS.md.
+    def base_type(text):
+        return re.sub(r"\[\d*\]", "[]", text).replace("const ", "").replace("volatile ", "").strip()
+
+    plain_excluded_no_size = []
+    plain_excluded_type_conflict = []
+    for name in classified["plain"] + classified["struct-with-pointer"]:
+        hits = found[name]
+        if len({base_type(h["type"]) for h in hits}) > 1:
+            plain_excluded_type_conflict.append(name)
+            continue
+        is_array = hits[0]["pointee"] is not None
+        sizes = [h["array_size"] for h in hits if h["array_size"] is not None]
+        if is_array and not sizes:
+            plain_excluded_no_size.append(name)
+            continue
+        canonical[name] = {
+            "kind": "plain",
+            "address": addresses[name],
+            "is_array": is_array,
+            "pointee": hits[0]["pointee"] if is_array else hits[0]["type"],
             "array_size": max(sizes) if sizes else None,
         }
 
@@ -241,6 +292,9 @@ def main():
               f"{len(names) - with_def} orphan -- extern only)")
     print(f"  {'conflicting':20s} {len(classified['conflicting']):5d}  (different shape across declarations)")
     print(f"  {'no-match':20s} {len(classified['no-match']):5d}  (not found as a VAR_DECL in scanned scope)")
+    print(f"  plain/struct-with-pointer wrapped: {len(canonical) - len(classified['pointer']) - len(classified['pointer-array'])}"
+          f"  (excluded, no stated size: {len(plain_excluded_no_size)}; "
+          f"excluded, type conflict across sites: {len(plain_excluded_type_conflict)})")
 
     os.makedirs(os.path.dirname(options.output) or ".", exist_ok=True)
     with open(options.output, "w") as handle:
@@ -251,6 +305,8 @@ def main():
             "conflicts": conflicts,
             "orphans": sorted(orphans),
             "declarations": found,
+            "plain_excluded_no_size": sorted(plain_excluded_no_size),
+            "plain_excluded_type_conflict": sorted(plain_excluded_type_conflict),
         }, handle, indent=1)
     print(f"wrote {options.output}")
 

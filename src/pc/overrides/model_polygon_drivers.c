@@ -52,10 +52,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef MEMORIES_LP64
+#define D_8009AFAC (*(unsigned int *)G2H(0x8009AFACu))
+#define D_8009AFB0 (*(unsigned int *)G2H(0x8009AFB0u))
+#define D_8009AFB4 (*(unsigned int *)G2H(0x8009AFB4u))
+#define D_8009AFB8 (*(unsigned int *)G2H(0x8009AFB8u))
+#define D_8009AFBC (*(unsigned int *)G2H(0x8009AFBCu))
+#define D_8009AFC0 (*(unsigned int *)G2H(0x8009AFC0u))
+#define D_8009AFC4 (*(unsigned int *)G2H(0x8009AFC4u))
+#define D_8009AFC8 (*(unsigned int *)G2H(0x8009AFC8u))
+#define D_8009AFD8 (*(unsigned int *)G2H(0x8009AFD8u))
+#define D_8009AFDC (*(unsigned int *)G2H(0x8009AFDCu))
+#define D_8009AFE0 (*(unsigned int *)G2H(0x8009AFE0u))
+#define D_8009AFE4 (*(signed char *)G2H(0x8009AFE4u))
+#define D_8009AFE5 (*(signed char *)G2H(0x8009AFE5u))
+#else
 extern u32 D_8009AFAC, D_8009AFB0, D_8009AFB4, D_8009AFB8; /* templates: FT3, FT4, GT3, GT4 */
 extern u32 D_8009AFBC, D_8009AFC0, D_8009AFC4, D_8009AFC8; /* second-pass templates of the translucent bank */
 extern u32 D_8009AFD8, D_8009AFDC, D_8009AFE0;             /* tpage bits, second-pass CLUT, colour cache */
 extern s8 D_8009AFE4, D_8009AFE5;                          /* lighting mode, translucent blend override */
+#endif
 extern u32 D_800FE240;                                     /* LIBGS packet cursor */
 
 enum { RTPS = 0x0180001, RTPT = 0x0280030, NCLIP = 0x1400006, AVSZ3 = 0x158002d, AVSZ4 = 0x168002e,
@@ -399,7 +415,13 @@ u32 *func_80067220(u32 *scratch)
 
 /* Outlines. `layout` is the polygon record being outlined (its vertex
  * indices sit where the polygon drivers find them). */
+#ifdef MEMORIES_LP64
+#define D_8009AFCC (*(unsigned int *)G2H(0x8009AFCCu))
+#define D_8009AFD0 (*(unsigned int *)G2H(0x8009AFD0u))
+#define D_8009AFD4 (*(unsigned int *)G2H(0x8009AFD4u))
+#else
 extern u32 D_8009AFCC, D_8009AFD0, D_8009AFD4; /* quad and triangle polyline words, draw-mode word */
+#endif
 
 static u32 *outline(u32 *scratch, int quad, int gouraud, int window, int shared)
 {

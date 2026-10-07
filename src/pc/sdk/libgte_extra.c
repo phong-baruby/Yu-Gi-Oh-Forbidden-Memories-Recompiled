@@ -260,7 +260,11 @@ int catan(int a)
 /* --- LIBGS ---------------------------------------------------------- */
 
 extern int D_800FE0C8;      /* frame counter: coordinate cache stamp */
+#ifdef MEMORIES_LP64
+#define D_800FE148 (*(MATRIX *)G2H(0x800FE148u))
+#else
 extern MATRIX D_800FE148;   /* GsWSMATRIX */
+#endif
 extern u32 D_800FE278[];    /* coordinate walk stack */
 
 /* Local-to-world for a GsCOORDINATE2 chain: the same walk as GsGetLwUnit

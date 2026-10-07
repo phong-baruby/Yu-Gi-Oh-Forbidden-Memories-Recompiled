@@ -7,7 +7,11 @@
 #include "pc/guest/mips.h"
 #include "pc/debug/log.h"
 
+#ifdef MEMORIES_LP64
+#define D_8009B261 (*(unsigned char *)G2H(0x8009B261u))
+#else
 extern unsigned char D_8009B261;
+#endif
 extern unsigned Memories_PresentedFrames(void);
 
 /* The common WA overlay dispatcher at 0x801462B0, the entry of the bank the

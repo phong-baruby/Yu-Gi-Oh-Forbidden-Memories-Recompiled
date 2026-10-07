@@ -24,7 +24,13 @@
 #include <stdio.h>
 #include <string.h>
 
-extern unsigned char D_8009B26C, D_8009B26E, D_8009B174;
+extern unsigned char D_8009B26C;
+#ifdef MEMORIES_LP64
+#define D_8009B26E (*(unsigned char *)G2H(0x8009B26Eu))
+#define D_8009B174 (*(unsigned char *)G2H(0x8009B174u))
+#else
+extern unsigned char D_8009B26E, D_8009B174;
+#endif
 static struct { int x, y, w, h; } viewport;
 static struct {
     int visible, unsupported, picked, status;
