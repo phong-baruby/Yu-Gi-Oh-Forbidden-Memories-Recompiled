@@ -59,5 +59,16 @@ static inline int mprotect(void *address, size_t length, int prot)
 }
 #else
 #include <sys/mman.h>
+/* macOS's <sys/mman.h> has never had the Linux names: MAP_ANON (BSD's own
+ * spelling) is there under the POSIX name instead, and MAP_FIXED_NOREPLACE
+ * does not exist in any spelling at all (T1.7 -- the ports that use it,
+ * src/pc/guest/state.c's game stack, pick a non-fixed address under
+ * MEMORIES_LP64 instead, so this is only ever read as "not available" by
+ * code that no longer tries to use it on that path). */
+#ifdef __APPLE__
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#endif
 #endif
 #endif

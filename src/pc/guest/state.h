@@ -42,10 +42,30 @@ int Memories_StateLoading(const MemoriesState *state);
  * and entry registers are scanned; native chunks keep their own formats. */
 void Memories_StateRemapRange(MemoriesState *state, uint32_t from, uint32_t to, uint32_t size);
 
-/* Registers on entry to VSync, written by the assembly entry (state_i386.S). */
+/* Registers on entry to VSync, written by the assembly entry
+ * (state_i386.S / state_arm64.S, T1.7). `sp` is named the same across both
+ * architectures (i386: `esp`, which points at the return address since
+ * VSync was entered by a `call`; arm64: `sp` itself, the return address is
+ * `x30` instead, captured as its own field) so state.c's own use of it
+ * (entirely save/load file bookkeeping, dead code under MEMORIES_LP64 until
+ * M4/ADR-08 builds real state files for it -- see that ADR's own note) needs
+ * no #ifdef of its own, just the one shared field name. */
+#ifdef MEMORIES_LP64
 typedef struct MemoriesStateEntry {
-    uint32_t ebx, esi, edi, ebp, esp; /* esp points at the return address */
+    /* AAPCS64 callee-saved: x19-x28, x29 (fp), x30 (lr) -- the game's own
+     * return address, since the assembly entry reaches VSync by a plain
+     * branch, not `bl`, leaving the caller's x30 untouched -- sp, and the
+     * low 64 bits of d8-d15 (the only part of v8-v15 AAPCS64 requires a
+     * callee to preserve). Never x18 (Apple's own platform register). */
+    uint64_t x19, x20, x21, x22, x23, x24, x25, x26, x27, x28;
+    uint64_t x29, x30, sp;
+    uint64_t d8, d9, d10, d11, d12, d13, d14, d15;
 } MemoriesStateEntry;
+#else
+typedef struct MemoriesStateEntry {
+    uint32_t ebx, esi, edi, ebp, sp; /* sp points at the return address */
+} MemoriesStateEntry;
+#endif
 extern MemoriesStateEntry Memories_StateEntry;
 
 /* main(): run `entry` on the fixed game stack. Does not return. */

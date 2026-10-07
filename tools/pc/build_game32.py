@@ -99,7 +99,16 @@ SDL_SOURCE = "tmp/pc/sdl-source/SDL3-3.4.16"
 BACKENDS = {"sdl": ["src/pc/platform/sdl.c", "src/pc/render/gl_picture.c", "src/pc/render/present_pass.c"],
             "x11": ["src/pc/platform/x11.c", "src/pc/platform/audio_alsa.c", "src/pc/platform/gamepad_evdev.c"]}
 BACKEND_SOURCES = sorted(sum(BACKENDS.values(), []))
-NATIVE = sorted(glob.glob("src/pc/guest/*.[cS]") + glob.glob("src/pc/sdk/*.c") +
+# macOS-only sources live beside their ILP32 counterparts under
+# src/pc/guest/ (CLAUDE.md's own sanctioned *_lp64.*/*_arm64.* naming, e.g.
+# gptr_lp64.c, image_lp64.c, state_arm64.S) rather than a separate directory
+# this glob would naturally skip -- excluded by name here so this i386
+# driver's own NATIVE list stays exactly what it was before any of them
+# existed (T1.7: found as a latent gap from T1.1/T1.2's own gptr_lp64.c/
+# image_lp64.c, never exercised locally since this Mac has no i386
+# Linux/Windows toolchain to build_game32.py against at all).
+NATIVE = sorted([f for f in glob.glob("src/pc/guest/*.[cS]")
+                 if "_lp64." not in f and "_arm64." not in f] + glob.glob("src/pc/sdk/*.c") +
                 [f for f in glob.glob("src/pc/platform/*.c") if f not in BACKEND_SOURCES] + glob.glob("src/pc/overlays/*.c") + glob.glob("src/pc/overrides/*.c") + glob.glob("src/pc/audio/*.c") + glob.glob("src/pc/mods/*.c") + glob.glob("src/pc/debug/*.c") + glob.glob("src/pc/cards/*.c") + glob.glob("src/pc/free_duel/*.c") + glob.glob("src/pc/saves/*.c") + glob.glob("src/pc/text/*.c") + ["src/pc/render/soft_gpu.c", "src/pc/render/texture_dump.c", "src/pc/render/texture_pack.c"]) + [
     "src/pc/rng.c", "src/pc/compat/fs.c", "src/pc/compat/gte.c", "src/pc/compat/pgxp.c", "src/pc/compat/libgs_ot.c", "src/pc/render/packets.c"]
 # Same contract as the host C library, so the host's version is used directly.

@@ -1,4 +1,28 @@
 #define _GNU_SOURCE
+/* macOS's own <ucontext.h> (used below, T1.7) refuses to declare
+ * getcontext/makecontext/swapcontext at all -- "deprecated ucontext
+ * routines require _XOPEN_SOURCE" -- unless this is defined first, before
+ * any header pulls <ucontext.h> in transitively. The functions themselves
+ * work fine on arm64 (verified at T0.x; see docs/macos/PROGRESS.md's own
+ * note), the macro is only ever a visibility gate. _GNU_SOURCE above
+ * already exposes everything this file needs on Linux, so this is
+ * Apple-only to avoid changing anything there. */
+#ifdef __APPLE__
+#define _XOPEN_SOURCE 600
+/* _XOPEN_SOURCE alone also hides MAP_ANON (sys/mman.h, T1.7's own game-stack
+ * mmap below) by switching macOS's headers to strict POSIX conformance,
+ * which does not include that BSD name; _DARWIN_C_SOURCE restores it (and
+ * every other Darwin-specific declaration) on top of _XOPEN_SOURCE. */
+#define _DARWIN_C_SOURCE
+/* macOS additionally marks getcontext/makecontext/swapcontext themselves
+ * -Wdeprecated-declarations (removed from POSIX in issue 7, 2008 -- the
+ * signal-mask-based alternative POSIX suggests does not fit this file's
+ * use, a plain stack switch, any better than it did when this port picked
+ * ucontext for ILP32). Already verified they work correctly on arm64 (see
+ * the note above and docs/macos/PROGRESS.md); this would otherwise be
+ * -Werror under this project's own compile flags. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "state.h"
 #include "state_remap.h"
 #include "rewind.h"
@@ -378,7 +402,7 @@ static void serialize(MemoriesState *state)
     }
     subsystems(state);
     {
-        MemoriesStateField fields[] = {{(void *)(uintptr_t)entry.esp, STACK_TOP - entry.esp}};
+        MemoriesStateField fields[] = {{(void *)(uintptr_t)entry.sp, STACK_TOP - entry.sp}};
         Memories_StateChunk(state, "stack", fields, 1);
     }
     Spu_Hold(0);
@@ -407,7 +431,7 @@ static int save(const char *path)
 /* Runs on the service (process) stack: the game stack is about to be replaced. */
 static void apply(void)
 {
-    MemoriesState state = {1, NULL, pending_image, pending_size};
+    MemoriesState state = {1, NULL, pending_image, pending_size, NULL, 0, 0, 0};
     static MemoriesStateEntry entry; /* not on a stack that a handler may share */
     const uint8_t *chunk;
     size_t size;
@@ -445,7 +469,7 @@ static void apply(void)
     chunk = find_chunk(&state, "entry", &size);
     memcpy(&entry, chunk, sizeof(entry));
     chunk = find_chunk(&state, "stack", &size);
-    memcpy((void *)(uintptr_t)entry.esp, chunk, size);
+    memcpy((void *)(uintptr_t)entry.sp, chunk, size);
     if (pending_image != rewind_image) free(pending_image);
     pending_image = NULL;
     Spu_Hold(0);
@@ -467,7 +491,7 @@ static void apply(void)
          * the next load would resume from those (EBP 0, a return into the
          * middle of Memories_StateRunGame). The switch lands in resume_game
          * on the game stack, below what the state restored there. */
-        uint32_t *frame = (uint32_t *)(uintptr_t)(entry.esp - 64);
+        uint32_t *frame = (uint32_t *)(uintptr_t)(entry.sp - 64);
         frame[0] = frame[1] = frame[2] = frame[3] = 0;
         frame[4] = (uint32_t)(uintptr_t)resume_game;
         frame[5] = 0;
@@ -691,7 +715,7 @@ done:
 
 static int load(const char *path)
 {
-    MemoriesState state = {1, NULL, NULL, 0};
+    MemoriesState state = {1, NULL, NULL, 0, NULL, 0, 0, 0};
     MemoriesStateEntry entry;
     FILE *file = fopen(path, "rb");
     const uint8_t *chunk;
@@ -725,7 +749,7 @@ static int load(const char *path)
         return -1;
     }
     memcpy(&entry, chunk, sizeof(entry));
-    if (entry.esp >= OTHER_STACK_BASE && entry.esp < OTHER_STACK_BASE + STACK_SIZE) {
+    if (entry.sp >= OTHER_STACK_BASE && entry.sp < OTHER_STACK_BASE + STACK_SIZE) {
         /* The state holds the game stack, return addresses into the game code
          * as the other system's compiler laid it out: nothing here to resume. */
         fprintf(stderr, "memories-pc: %s was saved by the %s build; a state loads only in a build for the "
@@ -734,7 +758,7 @@ static int load(const char *path)
         return -1;
     }
     chunk = find_chunk(&state, "stack", &size);
-    if (!chunk || entry.esp < STACK_BASE || entry.esp >= STACK_TOP || size != STACK_TOP - entry.esp ||
+    if (!chunk || entry.sp < STACK_BASE || entry.sp >= STACK_TOP || size != STACK_TOP - entry.sp ||
         !find_chunk(&state, "memory", &size) || size != MEMORIES_GUEST_RAM_SIZE + SCRATCHPAD_SIZE) {
         fprintf(stderr, "memories-pc: %s: damaged state\n", path);
         free(image);
@@ -886,10 +910,10 @@ static void rewind_point(unsigned presented_frames)
 static int from_game_code(void)
 {
     uint32_t caller;
-    if (Memories_StateEntry.esp < STACK_BASE || Memories_StateEntry.esp >= STACK_TOP) {
+    if (Memories_StateEntry.sp < STACK_BASE || Memories_StateEntry.sp >= STACK_TOP) {
         return 0;
     }
-    caller = *(const uint32_t *)(uintptr_t)Memories_StateEntry.esp;
+    caller = *(const uint32_t *)(uintptr_t)Memories_StateEntry.sp;
     return caller >= (uintptr_t)__start_game_text && caller < (uintptr_t)__stop_game_text;
 }
 
@@ -1000,13 +1024,33 @@ static int add_region(const char *name, char *data, char *data_end, char *bss, c
 
 int Memories_StateRunGame(int (*entry)(void))
 {
-    void *stack = mmap((void *)(uintptr_t)STACK_BASE, STACK_SIZE, PROT_READ | PROT_WRITE,
-                       MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     unsigned i;
+    void *stack;
+#ifdef MEMORIES_LP64
+    /* T1.7: no fixed address here, unlike ILP32 below -- ADR-01 already
+     * requires PIE on arm64 macOS, and nothing in this build needs the
+     * game stack at a stable address until save state does (ADR-08,
+     * "Proposed", chốt T4.1). A guard page below the usable region catches
+     * overflow (the stack grows down from the top of it, same as ILP32)
+     * instead of MAP_FIXED_NOREPLACE, which macOS's <sys/mman.h> does not
+     * define at all (the only reason this needed its own branch -- a
+     * regular, non-fixed mmap exists on every platform this port targets). */
+    long page = sysconf(_SC_PAGESIZE);
+    void *region = page > 0 ? mmap(NULL, (size_t)page + STACK_SIZE, PROT_READ | PROT_WRITE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) : MAP_FAILED;
+    if (region == MAP_FAILED || mprotect(region, (size_t)page, PROT_NONE) != 0) {
+        perror("game stack");
+        return 1;
+    }
+    stack = (char *)region + page;
+#else
+    stack = mmap((void *)(uintptr_t)STACK_BASE, STACK_SIZE, PROT_READ | PROT_WRITE,
+                 MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (stack != (void *)(uintptr_t)STACK_BASE) {
         perror("game stack");
         return 1;
     }
+#endif
     read_build_id();
     regions = calloc(Memories_ModuleCount + 1, sizeof(*regions));
     if (!regions || add_region("game", __start_game_data, __stop_game_data, __start_game_bss, __stop_game_bss)) {

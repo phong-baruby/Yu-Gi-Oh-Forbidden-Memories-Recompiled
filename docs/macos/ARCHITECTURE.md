@@ -105,6 +105,13 @@ Cho macOS:
 Upstream lưu RAM guest, biến của game, **stack game kèm return address native** và thanh ghi callee-saved lúc gọi `VSync`, và dựa vào việc code/stack nằm ở địa chỉ cố định (`src/pc/guest/state.h`). macOS arm64 bắt buộc PIE và ASLR.
 **Hướng mặc định.** Header state ghi thêm `arch = "arm64-lp64"`, text/data range và slide của image, cùng base của stack game. Khi load, mọi word 8-byte (căn 8) trong chunk `stack` rơi vào text/data range cũ được cộng delta; tận dụng cơ chế remap (`Memories_StateRemapRange`) và "startup image" sẵn có. RAM guest không cần rebase (ADR-01). Entry được lưu theo AAPCS64: x19–x28, x29 (fp), x30 (lr), sp, d8–d15. Không bao giờ đụng x18 (thanh ghi platform của Apple). Load state có `arch` khác thì từ chối kèm thông báo rõ ràng.
 
+**Hiện thực T1.7 (2026-10-07, xem `docs/macos/reports/m1-state-entry.md`):** phần định nghĩa thanh ghi
+entry ở trên đã hiện thực (`src/pc/guest/state_arm64.S`, `MemoriesStateEntry` trong `state.h`) — phần
+rebase/relocate theo slide ("Proposed") CHƯA làm, để T4.1. Stack game cấp bằng `mmap(NULL, ...)` (không
+cố định địa chỉ — khác mô tả "base của stack game" ở trên, vì T1.7 không cần fixed address, chỉ T4.1
+mới cần khi save state thật ghi/đọc con trỏ stack cố định) kèm guard page qua `mprotect(PROT_NONE)`
+thay `MAP_FIXED_NOREPLACE` (không tồn tại trên macOS).
+
 ## ADR-09 — Platform layer — Accepted
 - Chỉ dùng backend SDL3 (`sdl.c`); bỏ qua X11, ALSA và evdev trên macOS.
 - Giữ SIGALRM/`setitimer` (macOS hỗ trợ). Chỉ phần đọc PC lấy từ `ucontext` được port qua header `src/pc/compat/mcontext.h`: `uc_mcontext->__ss.__pc` / `__sp` / `__fp`.

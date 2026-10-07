@@ -2,7 +2,7 @@
 
 > Claude cập nhật file này ở cuối **mỗi** task (`/finish-task`). Fen là người duy nhất được đổi trạng thái của các Gate.
 
-**Task hiện tại:** T1.6 xong — chờ `/next-task`
+**Task hiện tại:** T1.7 xong — chờ `/next-task`
 **Upstream base:** `818a0d4f6c9c12b23e13593ff319ee2474c7cb3c` (upstream/master)
 
 ## Trạng thái
@@ -25,7 +25,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 - [x] T1.4a SDK · [x] T1.4b ai_* · [x] T1.4c func_800[0-3] (67/78, 11 chờ T1.5/T1.6) · [x] T1.4d func_800[4-9] (61/64, 3 chờ T1.5) · [x] T1.4e pc/overrides, compat, packets (6/6, 0 cần sửa) · [x] T1.4f src/game chunk 1/5 (50/71 — sửa lại 2026-10-05, xem decision log) · [x] T1.4g chunk 2/5 (50/71 — sửa lại 2026-10-05) · [x] T1.4h chunk 3/5 (52/71 — sửa lại 2026-10-05) · [x] T1.4i chunk 4/5 (48/71) · [x] T1.4j chunk 5/5, batch cuối (60/68) — **T1.4 xong, toàn bộ src/game đã qua codemod giai đoạn 2** (tổng 425/533 file SDK+src/game compile sạch, `src/overlays` dời M3)
 - [x] T1.5 Globals — phiên 1: đo quy mô + prototype (871 symbol khớp). Phiên 2: codemod hoá 80/111 symbol `pointer`/`pointer-array` (31 loại trừ — 16 bảng con trỏ hàm cần ADR-04/T1.6, 4 "vừa extern vừa định nghĩa thật" cần cơ chế khởi tạo riêng, 11 xung đột từ phiên 1); 10 file mới compile sạch, 0 regression, idempotent, layout khớp. 749 global data thuần + xử lý định nghĩa thật còn lại để dành phiên T1.5 sau.
 - [x] T1.6 Bảng con trỏ hàm và GCALL — `gen_fn_table.py` (1353 hàm thật + 433 stub, xác minh bằng libclang không tin suông `functions.csv`), `GCALL`/`Memories_GuestFunctionLookup`, test `pc_fn_table` pass (3 hàm retail + 1 callback native synthetic). Mở rộng codemod cho field GPTR_FN `update`/`phase_callback` (đọc-gọi + ghi bằng tên hàm literal); 6 file mới compile sạch, 0 regression. Loại khỏi scope (fen duyệt, để phiên sau): ghi GPTR_FN qua biến cục bộ/tham số trung gian (cần đổi kiểu biến, lan chữ ký hàm), 16+11 bảng/symbol "apfn" từ T1.5.
-- [ ] T1.7 VSync entry và stack game trên arm64
+- [x] T1.7 VSync entry và stack game trên arm64 — `state_arm64.S` (trampoline AAPCS64, offset khớp `offsetof` thật), `mmap(NULL,...)` + guard page thay `MAP_FIXED_NOREPLACE`. Test `pc_state` pass (1000 vòng VSync, canary 10 thanh ghi callee-saved). Phát hiện + sửa bug có trước (`build_game32.py`'s `NATIVE` glob cuốn luôn file `_lp64`/`_arm64`, từ T1.1/T1.2, chưa ai thấy vì không có toolchain i386 ở đây).
 - [ ] T1.8 Platform macOS
 - [ ] T1.9 Deps pin
 - [ ] T1.10 Build driver, chạy lần đầu
@@ -55,6 +55,8 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 ## Decision log
 | Ngày | Quyết định | ADR | Lý do |
 |---|---|---|---|
+| 2026-10-07 | T1.7: đổi tên field `MemoriesStateEntry.esp`→`.sp` (dùng chung tên cho cả i386 và arm64) khiến `from_game_code()` tự nhiên luôn `false` dưới LP64, không cần `#ifdef` cho toàn bộ máy save/load trong `state.c` | ADR-08 | `STACK_BASE`/`STACK_TOP` (địa chỉ cố định kiểu x86) không bao giờ khớp `sp` thật (từ `mmap(NULL,...)`), nên `Memories_StatePoint` tự nhiên no-op — đúng ý "save state chưa làm" của milestone mà không phải sửa logic hàng trăm dòng save/load/relocate/rewind. Không hỏi fen riêng (nằm trong phạm vi plan đã duyệt). Chi tiết: `docs/macos/reports/m1-state-entry.md`. |
+| 2026-10-07 | T1.7: sửa `build_game32.py`'s `NATIVE` glob (loại `_lp64.`/`_arm64.`) — phát hiện giữa phiên, không hỏi fen riêng vì là lỗi thật cần sửa để thêm `state_arm64.S` an toàn | — | `glob.glob("src/pc/guest/*.[cS]")` không lọc tên, cuốn mọi file macOS-only cùng thư mục vào build i386 — đã âm thầm đúng với `gptr_lp64.c`/`image_lp64.c` từ T1.1/T1.2, không ai phát hiện vì máy này không có toolchain i386 Linux/Windows. Ghi Upstream touch log. Chi tiết: `docs/macos/reports/m1-state-entry.md`. |
 | 2026-10-07 | T1.6: phạm vi thu hẹp lại "gán trực tiếp bằng tên hàm literal" cho field GPTR_FN, loại bỏ "gán qua biến cục bộ/tham số trung gian" (đổi kiểu biến sang gaddr, lan sang chữ ký hàm) | ADR-04 | Khảo sát thật cho thấy `update`/`phase_callback` không chỉ bị ĐỌC-rồi-GỌI (GCALL giải quyết) mà còn bị GHI — và ghi cần chiều ngược GCALL (encode địa chỉ retail, không phải H2G). ~18 chỗ gán trực tiếp bằng tên hàm (giải được gọn, tra functions.csv lúc codemod) nhưng `duel_scene_battle.c`/`file_stream.c` gán qua biến cục bộ/tham số (đổi kiểu biến — dạng biến đổi MỚI, T1.3/T1.4/T1.5 chưa từng đổi kiểu biến cục bộ, chỉ field/global). Hỏi fen qua `AskUserQuestion`, fen chọn dừng ở phần literal, để phần biến cục bộ cho phiên sau. Chi tiết: `docs/macos/reports/m1-fn-table.md`. |
 | 2026-10-07 | T1.6: sửa bug có trước T1.6 trong `transform_c_expressions` — so sánh `.type.kind == POINTER` trực tiếp (7 chỗ, cộng `is_pointer_like`) không rút gọn qua `get_canonical()`, nên biến khai báo qua typedef con trỏ (ví dụ `DisplayObjectCallback fn`) báo `ELABORATED` thay vì `POINTER`, bị bỏ qua lặng lẽ | ADR-05 | Lộ ra lần đầu ở T1.6 vì đây là lần đầu `transform_c_expressions` gặp biến cục bộ kiểu con trỏ khai báo QUA TYPEDEF (field GPTR dữ liệu thường hầu hết gán vào biến `T *` trần, không qua typedef) — field GPTR_FN luôn qua typedef (đúng lý do GPTR_FN tồn tại, ADR-02). Sửa cả 7 chỗ dùng `.get_canonical().kind`. Chi tiết: `docs/macos/reports/m1-fn-table.md`. |
 | 2026-10-07 | T1.6: acceptance đổi từ "build LP64 link được" → test độc lập (`tests/pc/fn_table_test.c`, theo khuôn `gptr_test.c`/`image_test.c`) | — | T1.10 (build driver) chưa tồn tại, không có cách nào link thật — đúng tình huống đã gặp ở T1.5 phiên 1, áp dụng lại cùng cách xử lý không cần hỏi lại fen. |
@@ -90,6 +92,7 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 |---|---|---|---|
 | `src/pc/sdk/libgte.c` | Thêm `#include "pc/guest/gptr.h"`; bọc 6 hằng ép kiểu địa chỉ guest bằng `G2H`; 2 field đọc (`get_lw` nằm ở `libgte_extra.c`, xem dòng dưới); nén `DivideLevel.corner`/`unused_return`/`DividePolygon4.ot` dưới `#ifdef MEMORIES_LP64` | ADR-05 (2)/(3); xem Decision log + `docs/macos/reports/m1-codemod-stage2a.md` | T1.4a |
 | `src/pc/sdk/libgte_extra.c` | Thêm `#include "pc/guest/gptr.h"`; bọc 2 hằng ép kiểu + 2 field đọc (`coordinate->super`) bằng `G2H` | ADR-05 (2)/(3) | T1.4a |
+| `tools/pc/build_game32.py` | `NATIVE`'s glob `src/pc/guest/*.[cS]` loại tên có `_lp64.`/`_arm64.` | Phát hiện T1.7: glob này quét KHÔNG lọc, nên mọi file macOS-only cùng thư mục (đúng quy ước `*_lp64.*`/`*_arm64.*` CLAUDE.md đã cho phép) bị cuốn vào build i386, sẽ trùng symbol với `gptr.c`/`image.c` hoặc (file `.S` arm64) assembler i386 từ chối thẳng cú pháp. Là lỗ hổng có từ T1.1/T1.2 (`gptr_lp64.c`/`image_lp64.c`), chưa ai thấy vì máy này không có toolchain i386 Linux/Windows để tự chạy `build_game32.py` kiểm tra. Sửa cùng lúc với việc thêm `state_arm64.S` (T1.7) để không lặp lại lỗ hổng lần thứ 3. | T1.7 |
 
 ## Vấn đề mở / rủi ro
 - **T1.6: ghi field GPTR_FN qua biến cục bộ/tham số trung gian — chưa có cơ chế.** `classify_write_fn`
@@ -149,6 +152,29 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 - **Con trỏ host thật bị ép xuống `s32`/`u32` qua BIẾN CỤC BỘ rồi ép ngược — chưa có hướng xử lý** (phát hiện khi đo scope T1.4e, 2026-10-02; xem ADR-05 trong `ARCHITECTURE.md`, mục ngay sau mục 9). Khác offsetof-qua-NULL (ADR-05 mục 9, đã sửa): đây là con trỏ host THẬT (ví dụ `u8 *indices = D_800EAE88; ... (s32)indices + i`), cắt cụt bit cao thật dưới con trỏ 8-byte — không an toàn để chỉ bọc `(uintptr_t)` như mục 9. `transform_c_expressions` chỉ quét field struct (`MEMBER_REF_EXPR`), không quét biến cục bộ/tham số mang con trỏ, nên không có cơ chế hiện tại xử lý được. T1.5 (globals) KHÔNG giải quyết vấn đề này (`G2H()` vẫn trả về con trỏ host thật). Đo được **28/121 file đã "compile sạch" ở T1.4a-d** (riêng batch đã xong, ~23%, chưa đo hết 352 file T1.4f) có pattern này: `ai_fusion.c`, `ai_turn_action.c`, `func_80019CC8.c`, `func_8001B938.c`, `func_80020BE4.c`, `func_80027DF8.c`, `func_800289BC.c`, `func_8002ABB4.c`, `func_8002F4C0.c`, `func_800320BC.c`, `func_800323F8.c`, `func_800339D0.c`, `func_80033DB0.c`, `func_80034830.c`, `func_80036C14.c`, `func_8003A01C.c`, `func_8003DA40.c`, `func_8003DC1C.c`, `func_80045514.c`, `func_80046A08.c`, `func_80049138.c`, `func_80051A48.c`, `func_80052D2C.c`, `func_80058938.c`, `func_80059AA8.c`, `func_8005CEF0.c`, `func_80061008.c` (cộng `psyq/startup_data.c`, đã biết từ T1.4a vì lý do khác — xem dòng ở trên). Đã hỏi fen qua `AskUserQuestion`: fen chọn ghi nhận vào đây, không đào sâu/sửa ngay, tiếp tục T1.4e theo kế hoạch gốc. Các số liệu "compile sạch" trong `m1-codemod-stage2a/b/c/d.md` không còn phản ánh đúng trạng thái hiện tại của 28 file này — không rõ vì sao quy trình đo thủ công lúc đó (script không được lưu lại thành file, không đối chiếu lại được) không bắt được lỗi này; không giả định nguyên nhân, chỉ ghi nhận khác biệt. Chi tiết đo + ví dụ: `docs/macos/reports/m1-codemod-stage2e.md`.
 
 ## Nhật ký session (ngắn, mới nhất ở trên)
+- 2026-10-07 — **T1.7 (VSync entry + stack game arm64, xong trong phạm vi đã duyệt).** Đọc trước:
+  `state_i386.S`, `state.h`, `state.c` (1052 dòng), ADR-08/09. Compile thử `state.c` dưới
+  `-DMEMORIES_LP64 -arch arm64` TRƯỚC khi sửa để đo lỗi thật (không đoán): thiếu `_XOPEN_SOURCE` cho
+  ucontext (API vẫn chạy đúng trên arm64, chỉ là macro hiển thị), `_XOPEN_SOURCE` riêng lại ẨN
+  `MAP_ANON`/`MAP_ANONYMOUS` (cần thêm `_DARWIN_C_SOURCE`), `MAP_FIXED_NOREPLACE` không tồn tại (đã
+  biết). Nhận ra phạm vi hẹp hơn lo ngại ban đầu: đổi tên field `esp`→`sp` khiến `from_game_code()` tự
+  nhiên luôn `false` dưới LP64 (vì `STACK_BASE` cố định kiểu x86 không khớp `sp` thật từ
+  `mmap(NULL,...)`), không cần bọc `#ifdef` cho toàn bộ máy save/load (serialize/apply/load/relocate/
+  rewind, hàng trăm dòng) — khớp đúng "save state chưa làm" của milestone. Viết `state_arm64.S`
+  (trampoline AAPCS64: `x19-x28,x29,x30,sp,d8-d15`, offset xác minh bằng `offsetof` thật qua chương
+  trình C nhỏ, không chỉ tính tay) + sửa `Memories_StateRunGame`'s mmap (nhánh LP64: `mmap(NULL,...)` +
+  `mprotect(PROT_NONE)` guard page). **Phát hiện giữa phiên (không hỏi fen riêng, tự sửa vì rõ ràng là
+  bug cần sửa để làm an toàn việc đã duyệt):** `build_game32.py`'s `NATIVE` glob
+  (`src/pc/guest/*.[cS]`) không lọc tên, cuốn mọi file macOS-only vào build i386 — đã âm thầm đúng với
+  `gptr_lp64.c`/`image_lp64.c` từ T1.1/T1.2, chưa ai phát hiện vì máy này không có toolchain i386 để tự
+  chạy kiểm tra; sửa glob loại `_lp64.`/`_arm64.`, ghi Upstream touch log. Viết
+  `tests/pc/state_test.c` (không link `state.c` thật — tự cấp `Memories_StateEntry`/mmap/ucontext
+  riêng, chỉ link `state_arm64.S` thật, theo đúng khuôn `gptr_test.c`/`fn_table_test.c`): 1000 vòng
+  `VSync` qua trampoline thật, canary 10 biến cục bộ qua các thanh ghi callee-saved — pass, cả dưới
+  ASan (chỉ warning đã biết của tool với `ucontext`, không phải lỗi thật). `CMakeLists.txt` cần thêm
+  `ASM` vào `project(... LANGUAGES C ASM)` (project trước giờ chỉ `C`). `ctest` toàn bộ: 30 lỗi
+  pre-existing không đổi (so khớp TÊN, số thứ tự lệch vì test mới chèn giữa). Chi tiết:
+  `docs/macos/reports/m1-state-entry.md`.
 - 2026-10-07 — **T1.6 (bảng con trỏ hàm + GCALL, xong trong phạm vi đã duyệt).** Khảo sát trước khi code:
   đọc `build_game32.py`'s `Memories_FunctionMap`/`stubs.c` generation (i386, dựa `nm` + trap x86 qua
   `image.c`'s `guest_call_target`/`on_fault`) — xác nhận không tái tạo được trên arm64 (ADR-01 đã bác bỏ

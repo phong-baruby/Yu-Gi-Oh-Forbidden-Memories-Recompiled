@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
-project(memories_pc LANGUAGES C)
+# ASM: T1.7's state_arm64.S (LP64-only entry trampoline). CMake drives it
+# through the same C compiler (clang accepts .S directly), nothing extra to
+# configure on any of this project's other targets/platforms.
+project(memories_pc LANGUAGES C ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -207,6 +210,13 @@ if(BUILD_TESTING)
             target_compile_options(memories_fn_table_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
         endif()
         add_test(NAME pc_fn_table COMMAND memories_fn_table_test)
+        add_executable(memories_state_test tests/pc/state_test.c src/pc/guest/state_arm64.S)
+        target_include_directories(memories_state_test PRIVATE src)
+        target_compile_definitions(memories_state_test PRIVATE MEMORIES_LP64)
+        if(NOT MSVC)
+            target_compile_options(memories_state_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+        add_test(NAME pc_state COMMAND memories_state_test)
     endif()
     add_executable(memories_pc_core_test tests/pc/core_test.c)
     target_link_libraries(memories_pc_core_test PRIVATE memories_pc_core)
