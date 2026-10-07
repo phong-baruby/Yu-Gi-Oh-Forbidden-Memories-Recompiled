@@ -28,7 +28,7 @@ Ký hiệu: `[ ]` chưa làm · `[~]` đang làm · `[x]` xong · `[!]` bị ch�
 - [x] T1.7 VSync entry và stack game trên arm64 — `state_arm64.S` (trampoline AAPCS64, offset khớp `offsetof` thật), `mmap(NULL,...)` + guard page thay `MAP_FIXED_NOREPLACE`. Test `pc_state` pass (1000 vòng VSync, canary 10 thanh ghi callee-saved). Phát hiện + sửa bug có trước (`build_game32.py`'s `NATIVE` glob cuốn luôn file `_lp64`/`_arm64`, từ T1.1/T1.2, chưa ai thấy vì không có toolchain i386 ở đây).
 - [x] T1.8 Platform macOS — `mcontext.h` (PC/SP/FP macro) + `pthread_get_stackaddr_np`/`timer_create`→`setitimer` fix (`crash.c`/`platform_common.c`); `paths.c` Application Support + `_NSGetExecutablePath` (thay `/proc/self/exe`). Spike Cocoa (SDL3 Homebrew tạm, không commit): 600+ frame `SDL_PollEvent` trên stack đã `swapcontext`, không crash/treo, cửa sổ thật xác nhận qua `CGWindowListCopyWindowInfo` — kết luận "phương án A" đủ dùng, không cần "phương án B".
 - [x] T1.9 Deps pin — `tools/pc/macos/build_deps.py` build SDL3 3.4.16 + FreeType VER-2-14-3 tĩnh, native arm64, vào `tmp/pc/macos-deps/`. Cache qua stamp file riêng mỗi lib, xác nhận cache hit lần chạy 2. Smoke-test executable (`otool -L` sạch, không `/opt/homebrew`/`/usr/local`; `lipo -info` xác nhận arm64 thuần). FreeType dùng đúng version Windows đã pin (nhất quán 3 platform, không có lý do macOS khác).
-- [~] T1.10 Build driver, chạy lần đầu — `tools/pc/macos/build.py` viết xong (codemod→compile→stub→link), chạy thật: 464/618 unit compile sạch (154 lỗi, cờ `-Werror` đúng thay vì `-w` trước đây che bớt — số 50 cũ là sai). **Chưa link được**: 221 global data "mồ côi" còn lại sau T1.5 phiên 3 (không stub được, cần ADR-03 thật hoặc rà xung đột kiểu). Dừng ở bước link, chưa chạy được binary nào. Xem `docs/macos/reports/m1-build-driver.md` để biết hướng tiếp tục.
+- [~] T1.10 Build driver, chạy lần đầu — `tools/pc/macos/build.py` viết xong (codemod→compile→stub→link), chạy thật: 469/618 unit compile sạch (149 lỗi). **Chưa link được**: 222 global data "mồ côi". Rà sâu lỗi compile lộ ra 2 khoảng trống kiến trúc CÓ TỪ TRƯỚC, chưa giải quyết: (1) T1.4e's "con trỏ host thật ép xuống s32/u32 qua biến cục bộ" (~189 lần, biết từ 2026-10-02); (2) T1.5 phiên 1's "`transform_c_expressions` chưa quét `DeclRefExpr` cho pointer-array global ở chỗ dùng" (biết từ 2026-10-06, tự ghi "để phiên sau" nhưng chưa ai làm). Cộng 1 việc phụ thuộc mới ngoài ADR-10 (`libpng`/`fontconfig` thiếu, 18 lần "file not found"). Sửa thêm 3 bug thật phát sinh từ chính T1.5 phiên 3 (mảng 2D cast sai cú pháp; 2 file native đọc pointer global không qua G2H). Dừng ở bước link — đề xuất KHÔNG đào sâu thêm trong T1.10, mỗi khoảng trống xứng 1 task riêng. Xem `docs/macos/reports/m1-build-driver.md`.
 - [ ] **Gate G1**
 
 ### M2 — Golden oracle
@@ -106,6 +106,8 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
 | `tools/pc/build_game32.py` | `NATIVE`'s glob `src/pc/guest/*.[cS]` loại tên có `_lp64.`/`_arm64.` | Phát hiện T1.7: glob này quét KHÔNG lọc, nên mọi file macOS-only cùng thư mục (đúng quy ước `*_lp64.*`/`*_arm64.*` CLAUDE.md đã cho phép) bị cuốn vào build i386, sẽ trùng symbol với `gptr.c`/`image.c` hoặc (file `.S` arm64) assembler i386 từ chối thẳng cú pháp. Là lỗ hổng có từ T1.1/T1.2 (`gptr_lp64.c`/`image_lp64.c`), chưa ai thấy vì máy này không có toolchain i386 Linux/Windows để tự chạy `build_game32.py` kiểm tra. Sửa cùng lúc với việc thêm `state_arm64.S` (T1.7) để không lặp lại lỗ hổng lần thứ 3. | T1.7 |
 | `tools/pc/lp64/gen_globals.py` | `type_shape()` báo cả element+size cho mảng "plain" (trước chỉ cho pointer-array); thêm vòng lặp build `canonical` cho `classified["plain"]`+`["struct-with-pointer"]` (gắn `kind: "plain"`), loại trừ mảng không rõ size và xung đột kiểu thật giữa các file | ADR-03 (T1.5 phiên 3) | `docs/macos/reports/m1-build-driver.md` | T1.10 |
 | `tools/pc/lp64/codemod.py` | `global_wrapper_text` tách nhánh theo `info["kind"]`: `"pointer"` giữ nguyên cơ chế phiên 2; `"plain"` phát macro trực tiếp `#define NAME (*(T*)G2H(addr))` (không struct/typedef) | ADR-03 (T1.5 phiên 3) | `docs/macos/reports/m1-build-driver.md` | T1.10 |
+| `src/pc/cards/card_browse.c` | Bọc `G2H(...)` khi đọc pointer global `gBuildDeck_pState` vào biến cục bộ (trước đó gán thẳng `gaddr` vào con trỏ, lỗi compile lộ ra sau khi sửa 1 lỗi khác trong cùng file ở phiên trước) | ADR-02/ADR-03 | T1.10 |
+| `src/pc/cards/rank_meter.c` | Bọc `G2H(...)` khi đọc pointer global `D_8009B1E8`/`D_8009B214` vào biến cục bộ/truy cập field | ADR-02/ADR-03 | T1.10 |
 | `src/pc/cards/fusion_helper.c`, `rank_meter.c`, `tables.c`; `src/pc/debug/cheats.c`; `src/pc/platform/ai_trace.c`, `credits.c`; `src/pc/overlays/duel_effects.c`; `src/pc/overrides/model_polygon_drivers.c`, `title_jump.c`; `src/pc/saves/deck_menu.c`, `deck_shop.c`; `src/pc/sdk/libgs.c`, `libgs_unit.c`, `libgte_extra.c` (15 file) | Bọc `#ifdef MEMORIES_LP64 #define NAME (*(T*)G2H(addr)) #else extern ... #endif` cho các global "data thuần" mà file tự khai báo `extern` riêng (né qua phạm vi quét của `gen_globals.py`, chỉ thấy header+`CODE_GLOBS`) thay vì include header đã wrap | ADR-03/ADR-05 (T1.5 phiên 3) | `docs/macos/reports/m1-build-driver.md` | T1.10 |
 
 ## Vấn đề mở / rủi ro
@@ -115,7 +117,15 @@ Mỗi lần sửa file dùng chung của upstream thì ghi một dòng. Danh sá
   global đó không ra `.o`); (2) 54 global "plain" bị loại trừ có chủ đích vì xung đột kiểu thật giữa các
   file (T1.5 phiên 3, chưa quyết hướng xử lý — ADR-03 gợi ý "macro khớp đúng kiểu tại từng file" nhưng
   chưa code); (3) 4 hàm cầu nối MODEL.MRG (`func_801462B0` và 4 hàm tương tự) mà `build_game32.py` hard-code
-  riêng, `build.py` chưa làm. Chi tiết đầy đủ + hướng tiếp tục: `docs/macos/reports/m1-build-driver.md`.
+  riêng, `build.py` chưa làm. **Cập nhật (rà sâu thêm cùng ngày)**: nguyên nhân lớn nhất thật ra là 2
+  khoảng trống kiến trúc có từ trước, không phải việc nhỏ — (a) T1.4e's "con trỏ host thật ép xuống
+  s32/u32 qua biến cục bộ" (~189 lần lỗi compile, biết từ 2026-10-02, chưa quyết hướng); (b) T1.5 phiên
+  1's "`transform_c_expressions` chưa quét `DeclRefExpr` cho pointer-array global ở CHỖ DÙNG (không chỉ
+  chỗ khai báo)" (biết từ 2026-10-06, tự ghi "để phiên sau" nhưng chưa ai làm — việc AST thật, quy mô
+  tương đương phần `MemberRefExpr` đã xây cho field GPTR). Cộng 18 lần "file not found" vì thiếu
+  `libpng`/`fontconfig` — phụ thuộc NGOÀI danh sách ADR-10 cho phép, việc khác hẳn. Đề xuất: mỗi khoảng
+  trống xứng một task riêng (không đào tiếp trong T1.10). Chi tiết đầy đủ + hướng tiếp tục:
+  `docs/macos/reports/m1-build-driver.md`.
 - **T1.8: `mkdtemp` thiếu khai báo trên macOS, ảnh hưởng ít nhất 17 file test** (`fs_test.c`,
   `texture_pack_test.c`, `controls_window_test.c`, `mods_test.c`, ... — `grep -rl mkdtemp tests/pc/`) —
   cùng họ lỗi với `MAP_ANON`/`ucontext` (macOS ẩn dưới `_POSIX_C_SOURCE` nghiêm ngặt, cần thêm

@@ -46,7 +46,7 @@ static int cpu_duel(void)
  * record with the adjustment the duel ended with against the game's own. */
 static void check_result(void)
 {
-    const DuelResultDisplayState *result = D_8009B1E8;
+    const DuelResultDisplayState *result = (const DuelResultDisplayState *)G2H(D_8009B1E8);
     int ours, tec, tier;
     if (checked || !result) return;
     checked = 1;
@@ -74,8 +74,8 @@ static void update(void)
     /* The plate goes with the FIELD box (Duel_InitScene's sprite), which
      * slides off the left edge for battles, the opponent's turn and the
      * field views; while it is not all on screen the plate is not shown. */
-    view.box_x = (s16)D_8009B214->field_30.h.field_30;
-    view.box_y = (s16)D_8009B214->field_30.h.field_32;
+    view.box_x = (s16)((DisplayObject *)G2H(D_8009B214))->field_30.h.field_30;
+    view.box_y = (s16)((DisplayObject *)G2H(D_8009B214))->field_30.h.field_32;
     if (view.box_x < 0 || view.box_y < 0) return;
     adjustment = D_800E9FF0[0].rank.result_adjustment;
     score = Rank_Score(&D_800E9FF0[0], adjustment ? adjustment : ADJUST_LP_WIN);

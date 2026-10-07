@@ -106,7 +106,7 @@ static int page_for(int row, int cursor, int rows, int page_rows)
  * along, and returns it; 0 at either end. */
 static u16 move_build_deck_cursor(int pad, int step)
 {
-    BuildDeckTransitionState *state = gBuildDeck_pState;
+    BuildDeckTransitionState *state = (BuildDeckTransitionState *)G2H(gBuildDeck_pState);
     CardList *list;
     int rows, row, at;
     if (pad != 0 || !state) return NOT_THIS_LIST;

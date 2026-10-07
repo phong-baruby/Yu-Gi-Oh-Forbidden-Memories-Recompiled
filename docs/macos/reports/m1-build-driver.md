@@ -96,6 +96,47 @@ cần hệ thống này — bank 0, nối tĩnh như resident; chỉ password/ov
 - `build.py` dừng sạch tại bước link (không cố và không dump lỗi `ld` dài) — in rõ "221 global ... xem
   tmp/pc/macos-build/data-blockers.json".
 
+## Tiếp tục phiên sau nữa (2026-10-07, cùng ngày) — rà 154 file compile-lỗi
+
+Bắt đầu rà từng nhóm lỗi thật (không đoán). Phát hiện thêm 3 bug thật do chính phiên T1.5 phiên 3 gây ra
+(không phải pre-existing — xác minh bằng `git stash` rồi build lại trên cây sạch, lỗi `ygo_types.h`
+"array size negative" đã có SẴN trên cây sạch, không liên quan):
+
+1. **Mảng 2 chiều bị cast sai**: `type_shape()` (T1.5 phiên 3) chỉ bóc 1 lớp mảng, nên với global 2D
+   thật (`DuelResultSpriteSpec D_80090960[2][7]`) sinh cast `(DuelResultSpriteSpec[7] (*)[2])` — cú pháp
+   C không hợp lệ (dán nguyên text `T[7]` vào chỗ cần kiểu phần tử đơn). Sửa: loại trừ hẳn mảng 2D+ khỏi
+   wrap (8 symbol, nhóm mới `plain_excluded_multi_dim` trong `gen_globals.py`) thay vì viết cast lồng
+   nhiều chiều đúng — quy mô nhỏ, không đáng xây.
+2. **2 file native `src/pc/cards/{card_browse,rank_meter}.c` đọc thẳng pointer global đã wrap (từ T1.5
+   phiên 2) vào biến cục bộ/field mà không qua `G2H`** — lộ ra chỉ sau khi phiên trước sửa xong 1 lỗi
+   extern khác trong cùng file (compiler mới đi xa hơn tới dòng này). Sửa bằng bọc `G2H(...)` tại chỗ đọc
+   — không cần `#ifdef` vì `G2H` dưới non-LP64 là no-op macro, bọc luôn an toàn cho cả 2 nhánh (khác hẳn
+   15 file phiên trước, vốn cần `#ifdef` vì phải xoá hẳn dòng `extern`).
+3. **Xác nhận (không sửa, để dành)**: phần lớn lỗi "member reference type 'gaddr' is not a pointer" còn
+   lại (`func_8004DE24.c`, `model_load_step.c` — file `src/game`, cấm sửa tay) đúng là khoảng trống
+   `transform_c_expressions` chưa quét `DeclRefExpr` cho pointer-array GLOBAL ở chỗ SỬ DỤNG (không phải
+   chỗ khai báo) mà T1.5 phiên 1 đã tự ghi "để lại cho phiên T1.5 tiếp theo" (2026-10-06) — vẫn chưa ai
+   viết. Đây là việc AST thật, quy mô tương đương phần `MemberRefExpr` đã xây cho field GPTR, không phải
+   sửa nhanh được.
+
+**Số liệu sau khi sửa 3 bug trên**: 149/618 unit compile lỗi (giảm từ 154), 222 global data blocker (tăng
+1 so với 221 — đúng, vì 8 symbol mảng 2D giờ bị loại trừ tường minh thay vì wrap sai). Phân loại lại lỗi
+compile còn lại theo nhóm (không đoán, đo bằng regex trên log thật):
+- **~189 lần "cast to/from smaller integer type"**: đúng khoảng trống đã biết từ T1.4e ("con trỏ host
+  thật ép xuống s32/u32 qua biến cục bộ") — ghi nhận từ 2026-10-02, chưa quyết hướng xử lý, KHÔNG phải
+  việc mới.
+- **18 lần "`png.h`/khác file not found"**: thiếu hẳn (`art.c`, `controls_art.c`, `glyphs.c`, `menu.c`,
+  `texture_pack.c`, ...) — phụ thuộc `libpng`/`fontconfig` không nằm trong ADR-10's danh sách dependency
+  cho phép (SDL3/FreeType/libclang/Python stdlib) — việc KHÁC HẲN ADR-03, chưa có hướng.
+- **10 lần "array size negative"**: xác nhận PRE-EXISTING (test trên `git stash`, không liên quan phiên
+  này) — struct layout nào đó lệch, chưa rõ nguyên nhân, ngoài phạm vi T1.10.
+- **4 lần "member reference type gaddr"**: khoảng trống `DeclRefExpr` nói ở trên.
+
+**Kết luận: phần việc còn lại để T1.10 link được KHÔNG CÒN LÀ "vài chỗ lặt vặt"** — là 2 khoảng trống kiến
+trúc thật, biết từ lâu, quy mô đáng kể (T1.4e's "con trỏ host thật" + T1.5 phiên 1's "DeclRefExpr cho
+pointer-array global"), cộng 1 việc phụ thuộc mới (`libpng`/`fontconfig`, ngoài ADR-10). Đề xuất: KHÔNG
+tiếp tục đào sâu trong T1.10 nữa — mỗi khoảng trống xứng đáng một task riêng có plan/acceptance riêng.
+
 ## Đề xuất cho phiên sau (không làm trong phiên này)
 
 1. Rà 154 file compile-lỗi (lý do thật, không phải `-w` nữa): nhiều khả năng trùng nhóm đã biết (apfn,

@@ -266,12 +266,24 @@ def main():
 
     plain_excluded_no_size = []
     plain_excluded_type_conflict = []
+    plain_excluded_multi_dim = []
     for name in classified["plain"] + classified["struct-with-pointer"]:
         hits = found[name]
         if len({base_type(h["type"]) for h in hits}) > 1:
             plain_excluded_type_conflict.append(name)
             continue
         is_array = hits[0]["pointee"] is not None
+        # A 2D+ array's element type is itself an array ("DuelResultSpriteSpec[7]",
+        # not a plain/struct type) -- codemod.py's plain-global cast
+        # (`T (*)[N]`) assumes a scalar/struct T and pastes this text in
+        # unchanged, producing invalid C (`DuelResultSpriteSpec[7] (*)[2]`).
+        # Caught by a real compile failure while continuing T1.10 (not
+        # measured in advance) -- excluded rather than taught to build a
+        # correct multi-dimension cast, only 8 names affected. See
+        # docs/macos/PROGRESS.md.
+        if is_array and "[" in hits[0]["pointee"]:
+            plain_excluded_multi_dim.append(name)
+            continue
         sizes = [h["array_size"] for h in hits if h["array_size"] is not None]
         if is_array and not sizes:
             plain_excluded_no_size.append(name)
@@ -294,7 +306,8 @@ def main():
     print(f"  {'no-match':20s} {len(classified['no-match']):5d}  (not found as a VAR_DECL in scanned scope)")
     print(f"  plain/struct-with-pointer wrapped: {len(canonical) - len(classified['pointer']) - len(classified['pointer-array'])}"
           f"  (excluded, no stated size: {len(plain_excluded_no_size)}; "
-          f"excluded, type conflict across sites: {len(plain_excluded_type_conflict)})")
+          f"excluded, type conflict across sites: {len(plain_excluded_type_conflict)}; "
+          f"excluded, 2D+ array: {len(plain_excluded_multi_dim)})")
 
     os.makedirs(os.path.dirname(options.output) or ".", exist_ok=True)
     with open(options.output, "w") as handle:
@@ -307,6 +320,7 @@ def main():
             "declarations": found,
             "plain_excluded_no_size": sorted(plain_excluded_no_size),
             "plain_excluded_type_conflict": sorted(plain_excluded_type_conflict),
+            "plain_excluded_multi_dim": sorted(plain_excluded_multi_dim),
         }, handle, indent=1)
     print(f"wrote {options.output}")
 
