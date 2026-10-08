@@ -1873,3 +1873,140 @@ in scope, not worth generalizing the branch for).
 """
 old = "p->field_1E0[i]->sid = selected;"
 new = "((ModelSlotPart *)G2H(p->field_1E0[i]))->sid = selected;"
+
+# T1.11 A1-STORED_ARG (ADR-05 muc 10): a function PARAMETER declared with a
+# narrow integer type that holds a real host pointer across the call
+# boundary -- unlike A1-STORED's local variable (fix_pointer_narrowing_locals,
+# codemod.py), retyping a parameter also means every call site passing a
+# real pointer for it needs its own cast widened, and the header prototype
+# needs the same edit -- 3 textual spots per function, each read and traced
+# to every caller first (docs/macos/reports/m1-t1.11-discovery.md's
+# A1-STORED_ARG section) before touching anything, same spirit as every
+# other override here. Each of the 3 functions below is a one-off, bespoke
+# shape (not a repeating pattern across many files), so a literal
+# substitution here is the right tool, not a new AST pass in codemod.py --
+# same reasoning as T1.4a's own "too small to justify a general transform".
+
+[[override]]
+file = "game/func_80052D2C.c"
+pattern = "parameter-narrows-real-pointer"
+reason = """
+`arg1`/`arg2` are declared `s32` and start out as plain slot indices from
+the caller (every call site passes a literal `0` or a small `s32` local --
+model_effect_requests.c's func_80059EBC/func_80059F18, func_800530C4 in
+this same file -- never a pointer), but when the index is 0 the function
+REASSIGNS them in place to a real host pointer (`arg1 = (s32)MODEL_SLOT_BYTES
+(D_800F3A10, index);` or `arg1 = (s32)&a;`, a local stack SVECTOR's
+address) and reads them back through `SVECTOR_VIEW(arg1)->vx` etc. Widening
+the parameter's own declared type to uintptr_t is therefore a NO-OP for
+every existing caller (int -> uintptr_t always widens safely) and fixes the
+truncation entirely inside this one file -- no other file touches arg1/arg2.
+"""
+old = "void func_80052D2C(s32 arg0, s32 arg1, s32 arg2, s32 arg3)"
+new = "void func_80052D2C(s32 arg0, uintptr_t arg1, uintptr_t arg2, s32 arg3)"
+
+[[override]]
+file = "game/func_80052D2C.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "The 4 write sites that reassign arg1/arg2 to a real pointer in place -- each still had its OWN (s32) cast (narrow regardless of arg1/arg2's now-wide declared type, caught separately by -Wpointer-to-int-cast) until this override; same reason as the parameter-type override just above."
+old = "            arg1 = (s32)MODEL_SLOT_BYTES(D_800F3A10, index);"
+new = "            arg1 = (uintptr_t)MODEL_SLOT_BYTES(D_800F3A10, index);"
+
+[[override]]
+file = "game/func_80052D2C.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "Same as the override just above -- arg2's matching write site."
+old = "            arg2 = (s32)MODEL_SLOT_BYTES(D_800F3A10, index);"
+new = "            arg2 = (uintptr_t)MODEL_SLOT_BYTES(D_800F3A10, index);"
+
+[[override]]
+file = "game/func_80052D2C.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "Same as the two overrides above -- arg1's fallback-to-local-stack-vector write site (`&a`)."
+old = "            arg1 = (s32)&a;"
+new = "            arg1 = (uintptr_t)&a;"
+
+[[override]]
+file = "game/func_80052D2C.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "Same as the three overrides above -- arg2's fallback-to-local-stack-vector write site (`&b`)."
+old = "        arg2 = (s32)&b;"
+new = "        arg2 = (uintptr_t)&b;"
+
+[[override]]
+file = "game/func_80052D2C.h"
+pattern = "parameter-narrows-real-pointer"
+reason = "Prototype must match game/func_80052D2C.c's own override above (same reason)."
+old = "void func_80052D2C(s32 arg0, s32 arg1, s32 arg2, s32 arg3);"
+new = "void func_80052D2C(s32 arg0, uintptr_t arg1, uintptr_t arg2, s32 arg3);"
+
+[[override]]
+file = "game/duel_shuffle_deck.c"
+pattern = "parameter-narrows-real-pointer"
+reason = """
+`src` is declared `s32`; `src == 0` selects a built-in/random deck (src never
+a pointer on that path), but the `else` branch reads straight through it as
+a real pointer (`*(u16 *)src; src += 2;`) with no cast of its own (the
+narrowing already happened at the one caller, Duel_ShuffleBothDecks in this
+same file, which has real `void *` parameters and casts them down to call
+this). Widening `src` to uintptr_t and widening that one caller's casts
+(separate overrides below) together fix the whole round trip; no other
+file calls Duel_ShuffleDeck (duel_shuffle_deck.h's own prototype needs the
+same edit, see its override).
+"""
+old = "void Duel_ShuffleDeck(s32 src, u8 *out16, u8 *out8) {"
+new = "void Duel_ShuffleDeck(uintptr_t src, u8 *out16, u8 *out8) {"
+
+[[override]]
+file = "game/duel_shuffle_deck.h"
+pattern = "parameter-narrows-real-pointer"
+reason = "Prototype must match game/duel_shuffle_deck.c's own override above (same reason)."
+old = "void Duel_ShuffleDeck(s32 src, u8 *out16, u8 *out8);"
+new = "void Duel_ShuffleDeck(uintptr_t src, u8 *out16, u8 *out8);"
+
+[[override]]
+file = "game/duel_shuffle_deck.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "Duel_ShuffleBothDecks's own call site -- widen the cast that used to satisfy Duel_ShuffleDeck's old s32 parameter, now that it is uintptr_t (see that function's own override above)."
+old = "    Duel_ShuffleDeck((s32)arg0, (u8 *)base, (u8 *)(base - 0x54));"
+new = "    Duel_ShuffleDeck((uintptr_t)arg0, (u8 *)base, (u8 *)(base - 0x54));"
+
+[[override]]
+file = "game/duel_shuffle_deck.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "Duel_ShuffleBothDecks's second call site -- same reason as the override just above."
+old = """    Duel_ShuffleDeck((s32)arg1, (u8 *)&((u16 *)base)[DECK_SIZE],
+                     (u8 *)(base - 0x2C));"""
+new = """    Duel_ShuffleDeck((uintptr_t)arg1, (u8 *)&((u16 *)base)[DECK_SIZE],
+                     (u8 *)(base - 0x2C));"""
+
+[[override]]
+file = "game/func_800320BC.c"
+pattern = "parameter-narrows-real-pointer"
+reason = """
+`arg0` is declared `s32` and is a `BuildDeckTransitionState *` the one
+caller (build_deck_pane_input.c's `state`, already passed as a real pointer
+to BuildDeck_TakeCardFromChest/BuildDeck_RefreshCountDisplay right next to
+this call -- not itself in question) narrows down with `(s32)state` to fit
+this parameter. The body only ever uses `arg0` in pointer arithmetic/casts
+(`arg0 + OFFSET`, `(BuildDeckTransitionState *)arg0`), never as a signed
+number, so widening to uintptr_t changes nothing else. build_deck_card_
+counts.h's own prototype needs the same edit (see its override); the one
+call site's cast needs widening too (see build_deck_pane_input.c's override).
+"""
+old = "void BuildDeck_AddCard(s32 arg0, s32 arg1)"
+new = "void BuildDeck_AddCard(uintptr_t arg0, s32 arg1)"
+
+[[override]]
+file = "game/build_deck_card_counts.h"
+pattern = "parameter-narrows-real-pointer"
+reason = "Prototype must match game/func_800320BC.c's own override above (same reason) -- note the header spells the parameters base/card_id, not arg0/arg1; only the type changes."
+old = "void BuildDeck_AddCard(s32 base, s32 card_id);"
+new = "void BuildDeck_AddCard(uintptr_t base, s32 card_id);"
+
+[[override]]
+file = "game/build_deck_pane_input.c"
+pattern = "parameter-narrows-real-pointer"
+reason = "The one call site into BuildDeck_AddCard -- widen the cast that used to satisfy its old s32 parameter, now that it is uintptr_t (see that function's own override)."
+old = "            BuildDeck_AddCard((s32)state, r);"
+new = "            BuildDeck_AddCard((uintptr_t)state, r);"

@@ -114,10 +114,15 @@
   nhưng đọc hết 14 file lộ ra 10/14 không phải A1 (global thoát-ly-kiểu MỚI phát hiện trong `src/
   unmatched.h`, GPTR_FN-qua-biến-cục-bộ đã biết từ ADR-04/T1.6, 2-tầng gaddr decode đã biết từ T1.4j,
   bitmask/tự nhân đã biết từ A1-INLINE) — 135/617 unit lỗi, giảm 2, 0 regression, idempotent, layout
-  0 khác biệt. **Thứ tự còn lại:** A1-STORED_ARG (5 tham số: `func_80052D2C.c` arg1/arg2,
-  `duel_shuffle_deck.c` src, `display_object_helpers.c` ot, `func_800320BC.c` arg0) → quyết định về
-  global thoát-ly-kiểu (`D_8009B118` họ hàng, 8 file) → UNCLEAR+macro-khác-file+2 file loại khỏi
-  A1-INLINE (đọc tay) → quay lại A2 sau khi đọc kỹ cả 13 field.
+  0 khác biệt. **A1-STORED_ARG đã làm xong 3/4** (`config/lp64/overrides.toml`, không cần AST pass mới
+  vì mỗi hàm là 1 shape riêng): `func_80052D2C.c` arg1/arg2, `duel_shuffle_deck.c` src, `func_800320BC.c`
+  arg0 — cả 3 đọc hết caller xác nhận an toàn (int nhỏ hoặc 1 cast rõ ràng duy nhất). `display_object_
+  helpers.c`'s `ot` (`DisplayObject_SubmitPacket`) KHÔNG sửa: đào callers lộ ra nó được gọi qua con trỏ
+  hàm lưu trong field `field_4C` — CHÍNH LÀ field polymorphic A2 đã tạm dừng — sửa `ot` riêng mà không
+  giải quyết A2 trước là vá nửa vời. 131/617 unit lỗi, giảm 4, 0 regression, idempotent, layout 0 khác
+  biệt. **T1.11 A1 (INLINE+STORED+STORED_ARG) coi như xong.** Còn lại: quyết định về global thoát-ly-kiểu
+  (`D_8009B118` họ hàng, 8 file) → UNCLEAR+macro-khác-file (đọc tay) → quay lại A2 sau khi đọc kỹ cả 13
+  field (field_4C trong đó, giờ thêm trọng lượng vì nó cũng chặn `ot`).
 - **Acceptance:** số file compile-lỗi do A1/A2/A5 giảm về 0 (hoặc có danh sách loại trừ tường minh + lý
   do cho phần còn lại), không regression ở 472 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
   thật (còn cần Gap B hoàn thiện + ADR-04 mở rộng trước khi 0 data blocker).
