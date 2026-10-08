@@ -963,6 +963,35 @@ def fix_offsetof_casts(data):
     return OFFSETOF_CAST_RE.sub(rb'(u32)(uintptr_t)&', data)
 
 
+# (TYPE *)0x1F8000xx..0x1F8003xx (scratchpad) or (TYPE *)0x80xxxxxx (retail
+# RAM, KUSEG convention used throughout config/pc/guest_addresses.txt) -- a
+# bare retail/scratch address cast straight to a pointer with no field or
+# global in between, so transform_c_expressions (which only walks from a
+# MEMBER_REF_EXPR/global DeclRefExpr) never sees it. Found at T1.11 phien 1b
+# (docs/macos/reports/m1-t1.11-discovery.md, shape A5) living almost
+# entirely inside *macro* bodies (e.g. SCRATCH_VERTEX), so one substitution
+# here fixes every call site at once. `0` itself is deliberately NOT matched
+# (not in either hex range below) -- that case degrades to a null pointer
+# either way, already valid, and is NOT the same bug as this (unlike
+# OFFSETOF_CAST_RE above, this pattern's whole premise is a REAL non-null
+# retail address). Idempotent: the inserted `G2H(` sits between the cast and
+# the literal, so a second pass finds no `)<hex>` immediately after a cast
+# to re-match.
+LITERAL_ADDR_CAST_RE = re.compile(
+    rb'(\([A-Za-z_][A-Za-z0-9_ ]*\*+\))(0x1F800[0-3][0-9A-Fa-f]{2}|0x80[0-9A-Fa-f]{6})\b'
+)
+
+
+def fix_literal_address_casts(data):
+    """(T *)0x1F800300 -> (T *)G2H(0x1F800300); (T *)0x801E2000 -> (T *)G2H(0x801E2000).
+    See LITERAL_ADDR_CAST_RE's comment for scope/why. ADR-05 item (3) named
+    this exact shape from the start ("hang so ep kieu con tro -> G2H") but it
+    was never implemented until T1.11 phien 1b measured it: 89 sites/13 files,
+    almost all inside macro bodies (SCRATCH_VERTEX and friends) rather than
+    at ordinary call sites."""
+    return LITERAL_ADDR_CAST_RE.sub(rb'\1G2H(\2)', data)
+
+
 def fix_global_pointer_chains(data, globals_map):
     """`NAME->member` / `NAME[idx]->member` -> `((pointee *)G2H(NAME))->member`
     / `((pointee *)G2H(NAME[idx]))->member`, for every "pointer"/"pointer-
@@ -1024,6 +1053,88 @@ def fix_global_pointer_chains(data, globals_map):
                                f"(({cast})G2H({name}[".encode() + m.group(1) + b"]))" + m.group(2) + b"->",
                                data)
     return data
+
+
+# T1.11 shape A1-INLINE (docs/macos/reports/m1-t1.11-discovery.md): a REAL
+# (non-gaddr) pointer narrowed to a 32-bit-or-smaller int, used only
+# transiently (arithmetic, then cast back to a pointer within the same
+# expression -- e.g. `*(u8 *)(i + (s32)indices)`), never stored into a
+# separate variable. Explicit allow-list, not every file: at least two files
+# use the textually identical `(s32)`/`(u32)` shape for something else
+# entirely -- a bit-mask/self-multiply bank-selector trick on a retail
+# text-bank address (duel_effect_command.c, text_box_build_step.c) -- where
+# widening would silently change the computed address instead of just
+# satisfying the compiler. Each name below was read in its own file and
+# confirmed to be a real pointer used this way before being added; expand
+# only by reading the next file the same way, not by guessing from the
+# warning text alone.
+POINTER_NARROWING_SAFE_FILES = frozenset({
+    "ai_fusion.c", "ai_turn_action.c", "display_object_render_sprite_sheet_list.c",
+    "display_object_updates.c", "duel_card_effects.c", "duel_effect_object_pool.c",
+    "duel_field_display_objects.c", "duel_reward_setup.c", "duel_scene_card_placement.c",
+    "duel_trap_resolution.c", "file_transfer_runtime.c", "func_80018FEC.c",
+    "func_8001B938.c", "func_80027DF8.c", "func_80045514.c", "func_80059AA8.c",
+    "input_pads.c", "model_effect_wrapped_value.c", "model_sequence_dispatch.c",
+    "text_control_commands.c",
+})
+
+NARROW_CAST_TEXT_RE = re.compile(rb'\(\s*(s32|u32|int|unsigned\s+int|long|unsigned\s+long)\s*\)')
+
+
+def fix_pointer_narrowing_casts(data, tu, filename):
+    """(s32)/(u32)/(int)/(unsigned int)/... applied directly to a real
+    pointer-typed expression -> (uintptr_t), for every CSTYLE_CAST_EXPR in
+    `filename` (only called for POINTER_NARROWING_SAFE_FILES -- see its
+    comment). Once widened, the surrounding arithmetic (usually `base +
+    offset`, sometimes `base + scaled_index`) promotes to full pointer
+    width, so the expression's own later cast back to a pointer (not
+    touched here -- it is already correctly typed, just fed a bad operand
+    before this fix) loses nothing. Does not need `is_assign_lhs`/write-side
+    classification like transform_c_expressions: a cast's operand is always
+    a read, never a write target.
+
+    Deliberately does not try to also recognize `(uintptr_t)x` (already
+    wide) or a cast whose operand is itself `gaddr`-typed (that shape is
+    `transform_c_expressions`'s job, via a MEMBER_REF_EXPR/global
+    DeclRefExpr, not this pass's) -- is_gaddr_type excludes it explicitly
+    even though an 8-byte-wide gaddr-holding-a-real-pointer scenario cannot
+    currently arise (gaddr is always exactly uint32_t, ADR-02), so the
+    exclusion is defensive, not load-bearing.
+
+    Aborts (not skip) when a matched cursor's own text does not start with
+    one of NARROW_CAST_TEXT_RE's spellings -- same reasoning as every other
+    sys.exit in transform_c_expressions: a shape this function cannot
+    confidently edit should stop the run, not silently leave the file
+    half-fixed."""
+    edits = []
+    for cursor in tu.cursor.walk_preorder():
+        if cursor.kind != cindex.CursorKind.CSTYLE_CAST_EXPR:
+            continue
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        target = cursor.type.get_canonical()
+        if target.kind not in (cindex.TypeKind.INT, cindex.TypeKind.UINT,
+                                cindex.TypeKind.LONG, cindex.TypeKind.ULONG):
+            continue
+        if target.get_size() > 4:
+            continue
+        children = list(cursor.get_children())
+        if len(children) != 2:
+            continue
+        operand = unwrap_transparent(children[1])
+        if is_gaddr_type(operand.type) or not is_pointer_like(operand.type):
+            continue
+        start = cursor.extent.start.offset
+        m = NARROW_CAST_TEXT_RE.match(data[start:start + 40])
+        if m is None:
+            sys.exit(f"error: {filename}:{cursor.location.line}: pointer-narrowing cast does not "
+                     f"match the expected '(TYPE)' text shape -- add a config/lp64/overrides.toml "
+                     f"entry or extend NARROW_CAST_TEXT_RE")
+        edits.append((start + m.start(1), start + m.end(1)))
+    out = data
+    for s, e in sorted(edits, reverse=True):
+        out = out[:s] + b"uintptr_t" + out[e:]
+    return out
 
 
 def load_function_addresses(path):
@@ -1690,6 +1801,7 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
                 data = data[:start] + replacement + data[end:]
     data = fix_mach_o_sections(data)
     data = fix_offsetof_casts(data)
+    data = fix_literal_address_casts(data)
     data = apply_overrides(data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:
@@ -1701,6 +1813,13 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
         sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
     out_data, count = transform_c_expressions(data, tu, os.path.basename(path), function_addresses)
     out_data = fix_global_pointer_chains(out_data, globals_map)
+    if os.path.basename(path) in POINTER_NARROWING_SAFE_FILES:
+        with open(out_path, "wb") as handle:
+            handle.write(out_data)
+        narrow_tu = parse_code(out_path, out_dir, in_dir)
+        if narrow_tu is None:
+            sys.exit(f"{out_path}: could not re-parse for fix_pointer_narrowing_casts")
+        out_data = fix_pointer_narrowing_casts(out_data, narrow_tu, os.path.basename(path))
     with open(out_path, "wb") as handle:
         handle.write(out_data)
     return count
@@ -1715,6 +1834,7 @@ def transform_file(path, out_path, include_dir, relpath, overrides, globals_map=
     out_data, count = transform_bytes(data, tu, os.path.basename(path), globals_map)
     out_data = fix_mach_o_sections(out_data)
     out_data = fix_offsetof_casts(out_data)
+    out_data = fix_literal_address_casts(out_data)
     out_data = apply_overrides(out_data, relpath, overrides)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as handle:

@@ -83,6 +83,50 @@ Các biến đổi chính:
 
 **Vấn đề chưa giải quyết, phát hiện khi đo scope T1.4e — con trỏ host thật ép xuống `s32`/`u32` qua BIẾN CỤC BỘ (không phải field struct):** khác mục (9) ở trên (base luôn là NULL, giá trị luôn nhỏ), đây là con trỏ host THẬT (ví dụ `u8 *indices = D_800EAE88;` rồi `(s32)indices + i`) bị cắt cụt thật dưới con trỏ 8-byte — mục (4) đã có hướng xử lý (tính trên host pointer rồi `H2G` lại) nhưng `transform_c_expressions` hiện chỉ quét `MEMBER_REF_EXPR` (field struct), không quét biến cục bộ/tham số mang con trỏ. T1.5 (globals sống trong RAM guest) **không** giải quyết được vấn đề này — `G2H(...)` vẫn trả về con trỏ host thật, vẫn cắt cụt được. Đo được 28/121 file chỉ riêng trong 4 batch T1.4a-d đã "xong" (~23%), chưa đo toàn dự án. Chưa quyết hướng xử lý — xem "Vấn đề mở" trong `PROGRESS.md` và `docs/macos/reports/m1-codemod-stage2e.md`.
 
+10. **(T1.11, mở 2026-10-08, xem `docs/macos/reports/m1-t1.11-discovery.md`) Con trỏ host thật ép xuống integer — 2 hình dạng, khác mục (4)/(9):**
+    - **A1 — trong biểu thức/biến cục bộ của một hàm `.c`:** ví dụ gốc ở mục trên (`(s32)indices + i`
+      rồi ép lại thành con trỏ).
+      - **A1-INLINE (đã sửa xong, 2026-10-08) — `fix_pointer_narrowing_casts` (`codemod.py`):** việc ép
+        xuống chỉ TẠM trong một biểu thức (không lưu vào biến riêng rẽ) — ép `(s32)`/`(u32)` lên
+        `(uintptr_t)` tại đúng điểm cast (quét `CSTYLE_CAST_EXPR` có operand là con trỏ thật), KHÔNG viết
+        lại thành số học con trỏ thuần như dự đoán ban đầu (đơn giản hơn, cùng hiệu quả — số học sau đó
+        tự nhiên thực hiện ở độ rộng con trỏ). Đo kỹ cho thấy shape "ép narrow rồi dùng ngay" có 2 BIẾN
+        THỂ NGUY HIỂM trùng hình dạng cú pháp nhưng SAI nếu ép `uintptr_t`: tự nhân/biến đổi giá trị của
+        CHÍNH biến đó (bit-trick số, không phải số học con trỏ, `duel_effect_command.c`) và bitmask lấy
+        "bank" từ địa chỉ retail/font chưa có định nghĩa thật (`duel_effect_command.c`/
+        `text_box_build_step.c`, phụ thuộc T1.5 mở rộng xử lý mảng không rõ size) — cả 2 bị loại khỏi
+        allow-list `POINTER_NARROWING_SAFE_FILES`, để riêng. Kết quả: 137/617 unit lỗi (giảm 8), 0
+        regression, idempotent. Chi tiết: `docs/macos/reports/m1-t1.11-discovery.md`.
+      - **A1-STORED/STORED_ARG (chưa làm):** biến cục bộ/tham số lưu giá trị đã ép qua nhiều dòng/qua lời
+        gọi hàm khác — cơ chế khác A1-INLINE (đổi kiểu KHAI BÁO biến, không phải tại điểm cast), chưa
+        thiết kế.
+    - **A2 — field khai báo kiểu nguyên trần (không phải `GPTR`) giữ con trỏ host THEO CHỦ Ý bản
+      decompile**, cast tay tại chỗ dùng (ví dụ `menu_record.h`'s `s32 grid[4][3]`, có comment xác nhận).
+      **Sửa lại (2026-10-08, trước khi code):** "đổi kiểu lưu trữ qua codemod" ở trên SAI — field này nằm
+      trong struct có static-assert offset tuyệt đối (`model.h`) hoặc stride cố định dùng nhiều nơi
+      (`menu_record.h`'s record 0x4C-byte) — đổi kiểu dịch offset mọi field phía sau, phá layout retail
+      (đúng thứ T1.3's `check_layouts_lp64.py` tồn tại để chặn). Đọc sâu `field_4C`/`value_08` cho thấy cả
+      hai polymorphic THẬT (cùng 4 byte, nhiều mục đích tuỳ code path — word màu/con trỏ hàm callback;
+      hằng số địa chỉ retail nhỏ/con trỏ của global ADR-03 đã `H2G` — vế sau vẫn fit 4 byte, KHÔNG phải
+      con trỏ host 8-byte bị cắt). Hướng khả thi nhất (CHƯA xác nhận hết mọi field A2): bọc `G2H`/`H2G`
+      tại TỪNG điểm đọc/viết cụ thể (như field `GPTR` bình thường), không đổi field — nhưng cần đọc kỹ
+      từng field trước khi tin chắc không có field nào giữ con trỏ host THẬT ngoài guest RAM (nếu có,
+      mới thật sự khó, cần cơ chế mới). Tạm dừng (fen duyệt), ưu tiên A1 trước.
+    - **A5** (phiên 1b, 2026-10-08, đã sửa xong — `fix_literal_address_casts`, `codemod.py`): literal
+      địa chỉ trần (retail hoặc scratchpad, ví dụ `(SVECTOR *)0x1F800300`) cast trực tiếp thành con trỏ,
+      KHÔNG gắn với field/global nào — đúng hướng ADR-05 mục (3) đã nói từ đầu (hằng số ép kiểu con trỏ →
+      `G2H`) nhưng literal này không đi qua một `MEMBER_REF_EXPR`/global `gaddr` nào để
+      `transform_c_expressions` quét thấy (thường nằm trong định nghĩa MACRO, ví dụ
+      `#define SCRATCH_VERTEX(i) ((SVECTOR *)0x1F800300 + (i))`) — sửa bằng regex tại macro định nghĩa
+      (một lần sửa hết hàng chục chỗ dùng), giống `fix_offsetof_casts`/`fix_mach_o_sections`, KHÔNG cần
+      AST. 0 regression, idempotent, `check_layouts_lp64.py` 0 khác biệt — xem PROGRESS.md decision log.
+    Phân biệt với nhóm đã loại khỏi T1.11 (không phải "con trỏ host thật ép kiểu", xem report): giá trị
+    nhỏ/handle an toàn ép qua `void*` (không chứng minh tĩnh được, xử lý tay từng điểm qua
+    `overrides.toml`); global pointer-array dùng trực tiếp làm đối số hàm và `gaddr`↔pointer tại biên
+    gọi hàm/khởi tạo cho field/global ĐÃ wrap đúng (đây là phần chưa xong của Gap B/T1.10 phiên 3 và của
+    gap ADR-04/T1.6 — cơ chế sửa là mở thêm nhánh AST cho `transform_c_expressions`, không liên quan
+    mục 10 này).
+
 ## ADR-06 — Hook mod bằng dispatch stub — Accepted
 Apple Silicon áp W^X cho `__TEXT`, nên cách patch `jmp *slot` vào NOP (`src/pc/mods/hooks.c`, `-fpatchable-function-entry`) không dùng được. Thay vào đó, mỗi hàm game hook được có một stub assembly sinh tự động:
 ```asm

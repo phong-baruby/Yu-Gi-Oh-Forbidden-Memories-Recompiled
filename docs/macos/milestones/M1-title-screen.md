@@ -63,21 +63,58 @@
   tách biệt (xem `docs/macos/reports/m1-build-driver.md`, PROGRESS.md "Vấn đề mở"). Việc lớn còn lại
   (Gap A, ~123/145 file lỗi compile) tách sang T1.11 vì không milestone nào sau (M2-M6) giải quyết được.
 
-### T1.11 — Gap A: con trỏ host thật ép xuống s32/u32 qua biến cục bộ
-- **Bối cảnh:** biết từ T1.4e (2026-10-02), xác nhận là nguyên nhân áp đảo (~85% lỗi compile còn lại của
-  T1.10) ở phiên 2026-10-08 — xem `docs/macos/reports/m1-build-driver.md`. Khác offsetof-qua-NULL (ADR-05
-  mục 9, đã sửa): đây là con trỏ host THẬT bị ép xuống kiểu 32-bit qua biến cục bộ/tham số rồi ép ngược
-  lại con trỏ (ví dụ `u8 *indices = D_800EAE88; ... (s32)indices + i`), cắt cụt nửa trên của con trỏ
-  8-byte — không an toàn để chỉ bọc `(uintptr_t)`. `transform_c_expressions` (codemod.py) hiện chỉ quét
-  field struct (`MEMBER_REF_EXPR`)/global (`DeclRefExpr`), chưa quét biến cục bộ/tham số hàm mang con trỏ.
-- **Làm:** đo quy mô + hình dạng thật trước khi code (bao nhiêu file, bao nhiêu kiểu idiom khác nhau —
-  biến cục bộ đơn giản vs tham số hàm lan qua chữ ký vs field tạm trong vòng lặp...). Đề xuất ADR mới
-  (hoặc mở rộng ADR-05) cho cơ chế: khả năng cao nhất là đổi kiểu biến cục bộ/tham số liên quan sang kiểu
-  đủ rộng (`intptr_t`/`gaddr` tuỳ ngữ cảnh) qua codemod, không hand-edit `src/game`/`src/psyq`. Việc AST
-  mới, quy mô ước tính tương đương phần `MemberRefExpr` đã xây cho field GPTR (T1.3/T1.4).
-- **Acceptance:** số file compile-lỗi do Gap A giảm về 0 (hoặc có danh sách loại trừ tường minh + lý do
-  cho phần còn lại), không regression ở 145 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
-  thật.
+### T1.11 — Gap A: con trỏ host thật ép xuống integer (biến cục bộ HOẶC field nguyên trần theo chủ ý)
+- **Bối cảnh:** biết từ T1.4e (2026-10-02). Phiên 1 (2026-10-08, discovery, xem
+  `docs/macos/reports/m1-t1.11-discovery.md`) đo lại bằng đúng flag cảnh báo clang: "Gap A" KHÔNG phải một
+  nguyên nhân — tách lại phạm vi T1.11 CHỈ còn 2 hình dạng:
+  - **A1** (đa số, hình dạng gốc đã biết): con trỏ host THẬT bị ép xuống kiểu 32-bit (ngay trong một biểu
+    thức, ví dụ `u8 *indices = D_800EAE88; ... *(u8*)(i + (s32)indices)` — ở đây việc ép xuống là TẠM,
+    không lưu vào biến riêng, nên hướng sửa là viết lại thành số học con trỏ thuần `indices + i`, KHÔNG
+    phải "đổi kiểu biến cục bộ" như ghi nhận ban đầu; nhưng cũng có thể gặp dạng biến cục bộ ĐƯỢC lưu kiểu
+    hẹp qua nhiều dòng — cần đọc hết, chưa giả định trước hình dạng nào chiếm đa số) — cắt cụt nửa trên
+    con trỏ 8-byte, không an toàn để chỉ bọc `(uintptr_t)`.
+  - **A2** (phát hiện ở phiên 1): field khai báo kiểu nguyên trần (`s32`/`u32`, KHÔNG phải `GPTR`) giữ con
+    trỏ host THEO CHỦ Ý của bản decompile, cast tay tại mọi chỗ dùng (ví dụ `menu_record.h`'s
+    `s32 grid[4][3]`, có comment xác nhận "Kept as s32 ..., with the pointer casts written out at use
+    sites") — field này nằm trong `src/game`, cấm sửa tay, phải đổi kiểu qua codemod/`config/lp64/`,
+    không phải quét AST trong thân hàm như A1. Quy mô ngoài `grid` chưa đo (chỉ 1 ví dụ có comment).
+  Các hình dạng khác đo được ở phiên 1 ĐÃ TÁCH RA khỏi T1.11 (không phải Gap A thật, không cần task
+  T1.12 riêng — gộp lại các thread sẵn có):
+  - A3 (giá trị nhỏ/handle an toàn ép qua `void*`, không chứng minh tĩnh được) và A4 (global pointer-array
+    dùng trực tiếp làm đối số hàm) + 15/21 file nhóm `-Wint-conversion` → về lại thread **Gap B** (T1.10
+    phiên 3, `fix_global_pointer_chains`/CALL_EXPR đã thử 2 lần rồi revert).
+  - 6/21 file nhóm `-Wint-conversion` (ghi `GPTR_FN` qua biến cục bộ/tham số) → về lại gap **ADR-04**
+    đã biết từ T1.6 (trước đo 3 file, nay ít nhất 6).
+  `transform_c_expressions` (codemod.py) hiện chỉ quét field struct (`MEMBER_REF_EXPR`)/global
+  (`DeclRefExpr`) đã là `gaddr`, chưa quét biến cục bộ/biểu thức mang con trỏ host THẬT (không phải
+  `gaddr`) như A1, cũng chưa có cơ chế đổi kiểu field nguyên trần như A2.
+- **Làm:** đọc hết (không chỉ mẫu) 108 file A1/A2 để chốt tỉ lệ các hình dạng con, RỒI MỚI thiết kế cơ
+  chế AST cho từng hình dạng (mở ADR-05 mục 10) — không viết transform tổng quát trước khi đo xong, đúng
+  tinh thần ADR-05.
+  **Phiên 1b (2026-10-08, census đầy đủ bằng libclang, xem `docs/macos/reports/m1-t1.11-discovery.md`):**
+  598 cast site / 101/108 file đo được (7 file có cast trong macro ở file khác, chưa bắt được). Phát hiện
+  thêm **A5** (literal địa chỉ trần, ví dụ `(SVECTOR *)0x1F800300`, không gắn field/global nào — 89 site/
+  13 file, sửa bằng regex như `fix_offsetof_casts`, RẺ và TÁCH BIỆT nhất). A1 chia 4 hình dạng con:
+  INLINE (46 site/22 file, viết lại số học con trỏ thuần), STORED (122 site/28 file, đổi kiểu khai báo
+  biến), STORED_ARG (33 site/18 file, lan qua chữ ký hàm — rủi ro cao hơn), UNCLEAR (33 site/16 file, đọc
+  tay). A2 rộng hơn ước lượng ban đầu: 13 file (không chỉ `grid`), gồm cả field truy cập qua macro
+  (`DISPLAY_OBJECT_VIEW`, `SPRITE_SHEET_HEADER`).
+  **Sửa lại (2026-10-08, trước khi làm A2 thật):** "đổi kiểu field qua codemod" ở trên SAI — mọi field A2
+  nằm trong struct có static-assert offset tuyệt đối (`model.h`) hoặc stride cố định dùng nhiều nơi
+  (`menu_record.h`) — đổi kiểu field phá layout retail (đúng thứ `check_layouts_lp64.py` chặn). Đọc sâu
+  2 field (`field_4C`, `value_08`) lộ ra cả hai polymorphic THẬT theo thiết kế decompile (cùng 4 byte,
+  nhiều mục đích khác nhau tuỳ code path — word màu/con trỏ hàm, hằng số địa chỉ nhỏ/con trỏ global đã
+  H2G). Hướng khả thi nhất (CHƯA xác nhận hết 13 field): bọc G2H/H2G tại TỪNG điểm đọc/viết cụ thể (như
+  field GPTR bình thường), không đổi field. Hỏi fen qua `AskUserQuestion`, fen chọn **tạm dừng A2, làm A1
+  trước** (A1 không bị ràng buộc layout). A5 đã làm xong (`fix_literal_address_casts`, 0 regression,
+  idempotent — xem PROGRESS.md decision log). **A1-INLINE đã làm xong** (`fix_pointer_narrowing_casts`,
+  allow-list 20/22 file — 2 file loại ra vì shape trùng cú pháp nhưng khác ý nghĩa, xem ADR-05 mục 10 —
+  137/617 unit lỗi, giảm 8, 0 regression). **Thứ tự còn lại:** A1-STORED (28 file) → A1-STORED_ARG
+  (18 file) → UNCLEAR+macro-khác-file+2 file loại khỏi A1-INLINE (đọc tay) → quay lại A2 sau khi đọc kỹ
+  cả 13 field.
+- **Acceptance:** số file compile-lỗi do A1/A2/A5 giảm về 0 (hoặc có danh sách loại trừ tường minh + lý
+  do cho phần còn lại), không regression ở 472 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
+  thật (còn cần Gap B hoàn thiện + ADR-04 mở rộng trước khi 0 data blocker).
 
 ## Gate G1
 Title screen chạy được. Cập nhật ước lượng M2–M6 trong PROGRESS.
