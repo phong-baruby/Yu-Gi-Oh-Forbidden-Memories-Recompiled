@@ -120,9 +120,15 @@
   helpers.c`'s `ot` (`DisplayObject_SubmitPacket`) KHÔNG sửa: đào callers lộ ra nó được gọi qua con trỏ
   hàm lưu trong field `field_4C` — CHÍNH LÀ field polymorphic A2 đã tạm dừng — sửa `ot` riêng mà không
   giải quyết A2 trước là vá nửa vời. 131/617 unit lỗi, giảm 4, 0 regression, idempotent, layout 0 khác
-  biệt. **T1.11 A1 (INLINE+STORED+STORED_ARG) coi như xong.** Còn lại: quyết định về global thoát-ly-kiểu
-  (`D_8009B118` họ hàng, 8 file) → UNCLEAR+macro-khác-file (đọc tay) → quay lại A2 sau khi đọc kỹ cả 13
-  field (field_4C trong đó, giờ thêm trọng lượng vì nó cũng chặn `ot`).
+  biệt. **T1.11 A1 (INLINE+STORED+STORED_ARG) coi như xong.** Phát hiện phụ (riêng, không phải A2): bug
+  "missed arm" trong `collect_global_edits` khi một global có nhiều spelling chọn qua guard-define chỉ
+  wrap được 1 nhánh — đã sửa `D_800101D8` (2 file), để lại `D_8009B458` (~10 file, vướng hazard
+  macro-argument khác). **A2 bắt đầu thật sự: `FileTransferDescriptor.value_08`/`value_0C` xong**
+  (`fix_pseudo_gptr_fields`, H2G/G2H per-site, field lớn nhất — 12 file) — 128/617 unit lỗi, giảm 3
+  (`duel_load_package_stage.c`, `main_menu_load_package_stage.c`, `model_texture_transfer.c` hết lỗi hoàn
+  toàn), 0 regression, idempotent, layout khớp. Còn lại cho A2: `field_4C` (polymorphic, khoá luôn `ot`
+  từ A1-STORED_ARG) + 6 field nhỏ hơn → rồi UNCLEAR+macro-khác-file (đọc tay) → quyết định về global
+  thoát-ly-kiểu (`D_8009B118`/`D_8009B458` còn lại, cần phiên T1.5 riêng).
 - **Acceptance:** số file compile-lỗi do A1/A2/A5 giảm về 0 (hoặc có danh sách loại trừ tường minh + lý
   do cho phần còn lại), không regression ở 472 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
   thật (còn cần Gap B hoàn thiện + ADR-04 mở rộng trước khi 0 data blocker).

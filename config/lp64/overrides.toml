@@ -2075,3 +2075,22 @@ extern u8 *D_800101D8 __attribute__((MEMORIES_SECTION(".data")));
 ## site read and its own override, same as ai_turn_action.c's -- reverted
 ## here rather than guessing at 10 files' worth of macro call sites in one
 ## pass; left for whoever picks this up next, see m1-t1.11-discovery.md.
+
+[[override]]
+file = "game/campaign_load_scene_package_stage.c"
+pattern = "pseudo-gptr-field-write-via-address-deref"
+reason = """
+`*(s32 *)&p->value_0C = (s32)D_801A8000;` writes value_0C through a cast
+pointer to its own address, instead of the plain `p->value_0C = ...` every
+other write site in this field's 12 consumers uses -- semantically
+identical (both just store into the same 4 bytes), but fix_pseudo_gptr_
+fields's MEMBER_REF_EXPR walk only recognizes the field as a direct
+assignment LHS, same "ghi field qua *(s32*)&p->field thay vì p->field"
+shape the A1 census already flagged as UNCLEAR/rare (2 sites total, both
+here) -- normalized to the plain form here rather than teaching the AST
+pass a 6th shape for 2 sites.
+"""
+old = """        *(s32 *)&p->value_0C = (s32)D_801A8000;
+        *(s32 *)&p->value_08 = (s32)D_801A8000;"""
+new = """        p->value_0C = (s32)D_801A8000;
+        p->value_08 = (s32)D_801A8000;"""

@@ -1644,6 +1644,149 @@ def classify_write_fn(rhs, data, context, function_addresses):
     return None  # local variable/parameter: known, deliberately deferred (see docstring)
 
 
+# T1.11 A2 (ADR-05 mục 10): fields that hold a real host pointer by design
+# (per-site cast, confirmed by reading every write site across every
+# consumer file -- see docs/macos/reports/m1-t1.11-discovery.md) but cannot
+# become GPTR(T) like an ordinary pointer field: each sits in a struct with
+# a static-assert absolute offset (ygo_types.h's own
+# FileTransferDescriptor_value_08_offset_must_be_0x08) or a fixed stride
+# used project-wide, and ygo_types.h is itself in CLAUDE.md's hand-edit-
+# forbidden list -- retyping the field (even via codemod) would shift every
+# field after it and break retail layout, the exact thing check_layouts_lp64.py
+# (T1.3) exists to catch. Unlike classify_write's GPTR fields (where the
+# ORIGINAL retail source already wrote `x.f = (SomeType *)expr` because f
+# really was a pointer there), these fields were ALWAYS declared a narrow
+# integer even in retail code (pointer == 4 bytes == u32 on i386, so the
+# cast was a no-op there) -- so the write shape is the opposite of
+# classify_write's: `x.f = (u32)real_pointer_expr`, cast TO the narrow
+# type, not FROM one.
+PSEUDO_GPTR_FIELDS = frozenset({
+    ("FileTransferDescriptor", "value_08"),
+    ("FileTransferDescriptor", "value_0C"),
+})
+
+
+def classify_write_pseudo_gptr(rhs, data, context):
+    """Replacement for the RHS of `x.f = rhs` where f is one of
+    PSEUDO_GPTR_FIELDS -- the mirror image of classify_write (see its
+    docstring): the field's own declared type is the narrow one, so a real
+    pointer being stored arrives as `(u32)real_ptr` (cast TO narrow, not
+    FROM pointer) -- H2G's return value is already exactly the field's
+    width (a guest address always fits 32 bits, ADR-02), so the outer
+    narrowing cast is redundant once H2G runs and is dropped along with it,
+    not kept. `(u32)(plain_int_expression)` (operand not itself a real
+    pointer -- e.g. `(u32)D_8009B118` in a file where that global is still
+    the scalar arm, or `(s32)D_80010000` where it's still "conflicting",
+    T1.5's own unfinished backlog) is left completely untouched: neither
+    H2G (operand is not a pointer -- it would abort) nor any other edit is
+    correct here, and this specific site staying broken is that external
+    blocker surfacing, not a new bug for this pass to paper over -- same
+    "leave it, let the file still fail compile" choice classify_write_fn
+    makes for its own still-unhandled shape."""
+    rhs = unwrap_transparent(rhs)
+    if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
+        target = rhs.type.get_canonical()
+        if target.kind in (cindex.TypeKind.INT, cindex.TypeKind.UINT,
+                           cindex.TypeKind.LONG, cindex.TypeKind.ULONG) and target.get_size() <= 4:
+            operand = unwrap_transparent(list(rhs.get_children())[-1])
+            if is_pointer_like(operand.type) and not is_gaddr_type(operand.type):
+                ostart, oend = operand.extent.start.offset, operand.extent.end.offset
+                return (rhs.extent.start.offset, rhs.extent.end.offset, b"H2G(" + data[ostart:oend] + b")")
+            return None  # not a real pointer -- leave the cast exactly as-is
+    if is_pointer_like(rhs.type) and not is_gaddr_type(rhs.type):
+        rstart, rend = rhs.extent.start.offset, rhs.extent.end.offset
+        return (rstart, rend, b"H2G(" + data[rstart:rend] + b")")
+    return None  # a literal constant, or already gaddr-shaped: both fine as-is
+
+
+def fix_pseudo_gptr_fields(data, tu, filename):
+    """Applies H2G (write) / G2H (read) at each site touching a
+    PSEUDO_GPTR_FIELDS member, the same per-site translation an ordinary
+    GPTR field gets from transform_c_expressions -- but run as its own pass
+    (not folded into that function) because these fields do not satisfy
+    its own top-level is_gaddr_type(ref.type) gate at all (their declared
+    C type is a plain narrow integer, by design, never gaddr) and routing
+    them through field_pointee would be a false claim: there is no GPTR(T)
+    declaration anywhere for this pass to read a pointee type back from.
+    Only the shapes actually confirmed across every current consumer are
+    handled; anything else aborts and asks for a config/lp64/overrides.toml
+    entry, same "abort, don't guess" spirit as transform_c_expressions."""
+    parent_map = {}
+    build_parent_map(tu.cursor, parent_map)
+    edits = []
+
+    for cursor in tu.cursor.walk_preorder():
+        if cursor.kind != cindex.CursorKind.MEMBER_REF_EXPR:
+            continue
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        ref = cursor.referenced
+        if ref is None:
+            continue
+        parent_struct = ref.semantic_parent
+        key = (parent_struct.spelling if parent_struct is not None else None, ref.spelling)
+        if key not in PSEUDO_GPTR_FIELDS:
+            continue
+        if already_translated(cursor, parent_map):
+            continue
+
+        parent = skip_transparent(cursor, parent_map)
+        start, end = cursor.extent.start.offset, cursor.extent.end.offset
+        context = f"{filename}:{cursor.location.line}"
+        if start == end:
+            sys.exit(f"error: {context}: {cursor.spelling!r} has a degenerate source extent "
+                     f"-- add a config/lp64/overrides.toml entry")
+
+        if parent is not None and parent.kind == cindex.CursorKind.UNARY_OPERATOR \
+                and unary_operator(parent, data) == "&":
+            # `&x.f` -- never a read or write of the field's VALUE, just its
+            # ADDRESS (the classic null-base offsetof idiom, e.g.
+            # file_transfer_runtime.c's `&((FileTransferDescriptor *)0)->
+            # value_08`, already handled upstream by fix_offsetof_casts's own
+            # text-level pass on the surrounding cast -- or, for a real
+            # (non-null) base, an address this pass has not seen dereferenced
+            # anywhere, so there is nothing here to translate). No edit.
+            continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.BINARY_OPERATOR \
+                and is_assign_lhs(parent, cursor) and binop_operator(parent, data) == "=":
+            rhs_node = unwrap_transparent(list(parent.get_children())[1])
+            edit = classify_write_pseudo_gptr(rhs_node, data, context)
+            if edit is not None:
+                edits.append(edit)
+            continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR \
+                and is_assign_lhs(parent, cursor):
+            rhs = unwrap_transparent(list(parent.get_children())[1])
+            if is_pointer_like(rhs.type) and not is_gaddr_type(rhs.type):
+                sys.exit(f"error: {context}: compound assignment to {cursor.spelling!r} with a "
+                         f"pointer-typed RHS -- add a config/lp64/overrides.toml entry")
+            continue  # f += <int>: a guest address plus an offset, already valid
+
+        if parent is not None and parent.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
+            if parent.type.get_canonical().kind == cindex.TypeKind.POINTER:
+                edits.append((start, end, b"G2H(" + data[start:end] + b")"))
+            continue  # cast to a non-pointer type (e.g. (u32)x.f): already valid
+
+        if parent is not None and parent.kind == cindex.CursorKind.VAR_DECL:
+            if parent.type.get_canonical().kind == cindex.TypeKind.POINTER:
+                edits.append((start, end, f"({parent.type.spelling})G2H(".encode() + data[start:end] + b")"))
+            continue
+
+        if parent is not None and parent.kind == cindex.CursorKind.CALL_EXPR:
+            edits.append((start, end, b"G2H(" + data[start:end] + b")"))
+            continue
+
+        sys.exit(f"error: {context}: {cursor.spelling!r} used in an unrecognized shape -- "
+                 f"add a config/lp64/overrides.toml entry")
+
+    out = data
+    for s, e, repl in sorted(edits, key=lambda x: x[0], reverse=True):
+        out = out[:s] + repl + out[e:]
+    return out
+
+
 def transform_c_expressions(data, tu, filename, function_addresses=None):
     """Edits for ADR-05 (2)/(4) in a *.c file's function bodies -- see the
     module docstring for the overall shape, classify_write's docstring for
@@ -1993,6 +2136,19 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
         sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
     out_data, count = transform_c_expressions(data, tu, os.path.basename(path), function_addresses)
     out_data = fix_global_pointer_chains(out_data, globals_map)
+    # fix_pseudo_gptr_fields next: a fixed, project-wide field allow-list
+    # (PSEUDO_GPTR_FIELDS), not a per-file one -- safe to run unconditionally
+    # for every expr_pass file, since it finds nothing to edit in a file that
+    # never touches one of those fields. Needs its own re-parse (same reason
+    # as the two allow-listed passes below): it reads MEMBER_REF_EXPR
+    # referenced-decl info that transform_c_expressions's own edits already
+    # changed the surrounding text for.
+    with open(out_path, "wb") as handle:
+        handle.write(out_data)
+    pseudo_gptr_tu = parse_code(out_path, out_dir, in_dir)
+    if pseudo_gptr_tu is None:
+        sys.exit(f"{out_path}: could not re-parse for fix_pseudo_gptr_fields")
+    out_data = fix_pseudo_gptr_fields(out_data, pseudo_gptr_tu, os.path.basename(path))
     # fix_pointer_narrowing_locals before fix_pointer_narrowing_casts (not the
     # reverse): a file in both allow-lists (e.g. duel_reward_setup.c) needs
     # its STORED variable's own declared type widened first -- once that
