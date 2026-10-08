@@ -71,7 +71,12 @@ def native_sources():
             glob.glob("src/pc/debug/*.c") + glob.glob("src/pc/cards/*.c") + glob.glob("src/pc/free_duel/*.c") +
             glob.glob("src/pc/saves/*.c") + glob.glob("src/pc/text/*.c") +
             ["src/pc/render/soft_gpu.c", "src/pc/render/texture_dump.c", "src/pc/render/texture_pack.c",
-             "src/pc/render/packets.c", "src/pc/render/psyz_gpu.c",
+             "src/pc/render/packets.c",
+             # psyz_gpu.c needs <psyz.h> from an external PSY-Z checkout --
+             # CMakeLists.txt only builds it when MEMORIES_PSYZ_ROOT is set
+             # (optional hardware-GPU-emulation backend, off by default).
+             # This driver has no equivalent flag yet, so it stays out like
+             # CMake's default -- nothing in src/pc calls into it currently.
              "src/pc/rng.c", "src/pc/compat/fs.c", "src/pc/compat/gte.c", "src/pc/compat/pgxp.c",
              "src/pc/compat/libgs_ot.c", "src/pc/compat/mods_disabled_lp64.c"] + MODS_NATIVE)
     return sorted(set(guest + platform + rest))
@@ -167,6 +172,23 @@ def main():
     run([sys.executable, "tools/pc/lp64/gen_fn_table.py"])
     print("== codemod.py ==")
     run([sys.executable, "tools/pc/lp64/codemod.py"])
+
+    # src/psyq/inline_c.h does a quoted "../pc/compat/inline_c_native.h",
+    # relative to its own real location one level under src/. codemod.py's
+    # copy at tmp/lp64/src/psyq/inline_c.h has no sibling tmp/lp64/src/pc/,
+    # so that lookup (tried first, before any -I fallback) fails. A symlink
+    # makes it resolve to the one real copy of that header without touching
+    # INCLUDES' general search order -- an earlier attempt that added
+    # "-Isrc/psyq" there instead broke every native file's plain
+    # `#include <stdio.h>`/`<stdlib.h>`/etc: src/psyq ships its own
+    # minimal PSY-Q shims under those exact standard names, and once its
+    # directory was itself a search path, angle-bracket lookups found those
+    # shims before the real system headers.
+    out_pc_link = os.path.join(OUT_SRC, "pc")
+    if not os.path.islink(out_pc_link):
+        if os.path.exists(out_pc_link):
+            shutil.rmtree(out_pc_link)
+        os.symlink(os.path.join(ROOT, "src", "pc"), out_pc_link)
 
     game_sources = sorted(glob.glob(os.path.join(OUT_SRC, "game", "*.c")) +
                           glob.glob(os.path.join(OUT_SRC, "psyq", "*.c")))

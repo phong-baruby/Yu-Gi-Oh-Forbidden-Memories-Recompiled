@@ -194,3 +194,69 @@ lần thử mở rộng đã gây regression thật, phải revert). Đã dừng
 - Sửa (dùng chung upstream, ghi Upstream touch log): `tools/pc/lp64/gen_globals.py`,
   `tools/pc/lp64/codemod.py`, 15 file `src/pc/**/*.c` (danh sách ở trên).
 - Không commit: `tmp/lp64/`, `tmp/pc/macos-build/` (gitignore `/tmp/`).
+
+## Phiên 2026-10-08 — đo lại chính xác, dọn lỗi nhỏ, tách Gap A thành T1.11
+
+Fen hỏi hướng Gap A (189→123 lần "cast to/from smaller integer type", đã biết từ 2026-10-02): kiểm tra
+M2-M6 trước khi tách task. Không milestone nào sau giải quyết được (M2 giả định build chạy; M3/T3.1 chỉ
+là `src/overlays`). Fen duyệt tách T1.11 (milestone M1), T1.10 dừng lại sau khi dọn các lỗi KHÔNG thuộc
+Gap A.
+
+**Đo lại chính xác 153 file lỗi (grep pattern cũ bỏ sót một số câu lỗi clang, số liệu "189 lần"/"18 lần"
+của báo cáo trước là lần lỗi, không phải file — không đổi kết luận, chỉ chính xác hơn):** ~123/153 (80%)
+Gap A; 15 file thiếu `png.h`/`fontconfig.h`/`psyz.h`/`inline_c_native.h` (path/dependency, tách biệt); 7
+file `negative array size` (pre-existing, xác nhận lại qua `git stash`); 4 file `initializer element is
+not a compile-time constant` (MỚI quan sát được qua lỗi compile cụ thể — nhưng chính là nhóm "4 symbol
+vừa extern vừa định nghĩa thật" đã biết từ T1.5 phiên 2, không phải phát hiện mới); 1 file typedef
+collision (`graphics_frame.c`, cùng họ bug "double-wrap trong 1 TU" như nhóm 4 symbol trên, symbol thứ 5
+chưa từng bị phát hiện vì định nghĩa thật của nó là tentative — không có initializer — nên
+`cursor.is_definition()` bỏ sót, khác 4 symbol kia); 1 file thiếu `pipe2` (họ `mkdtemp`/`_DARWIN_C_SOURCE`
+đã biết từ T1.8); 1 file asm x86-only (`monitor.c`).
+
+**Đã sửa (8 file, 0 regression — xác nhận bằng diff danh sách file lỗi trước/sau, không chỉ đếm số
+lượng):**
+1. 5 file include-path bug `inline_c_native.h` (`func_80015D18.c`, `func_800177C4.c`, `func_800178BC.c`,
+   `func_8001B0CC.c`, `func_80029934.c`): `src/psyq/inline_c.h`'s `#include "../pc/compat/
+   inline_c_native.h"` (quoted, tương đối theo vị trí thật 1 cấp dưới `src/`) thất bại vì bản copy của
+   codemod tại `tmp/lp64/src/psyq/inline_c.h` không có `tmp/lp64/src/pc/` cạnh nó. **Thử đầu (thêm
+   `-Isrc/psyq` vào `INCLUDES` chung của `build.py`) gây regression thật**: `src/psyq` có bộ header
+   PSY-Q SDK trùng tên chuẩn (`stdio.h`, `stdlib.h`, `string.h`, `assert.h`, ...) — đưa nó vào include
+   search path CHUNG khiến MỌI file native `#include <stdio.h>` tìm nhầm shim PSY-Q (thiếu `FILE`, v.v.)
+   thay vì header hệ thống thật, +53 file lỗi mới. Revert ngay, phát hiện bằng diff danh sách file lỗi
+   trước/sau (không chỉ tin số lượng giảm). Sửa đúng bằng symlink `tmp/lp64/src/pc -> src/pc` (tạo trong
+   `build.py` sau khi `codemod.py` chạy) — chỉ ảnh hưởng đúng 1 include tương đối, không đụng search path
+   chung.
+2. `model_polygon_drivers.c` (file được phép sửa tay): 2 mảng cục bộ `static u32 *const templates[2][2]`/
+   `second_templates` trong `draw()` có initializer tham chiếu các symbol đã macro-hoá bởi "local extern"
+   fix của phiên trước (`D_8009AFAC`...) — macro gọi `G2H()`, không phải hằng thời-dịch, nên `static`
+   không hợp lệ. Bỏ `static` dưới `#ifdef MEMORIES_LP64` (giữ nguyên dưới `#else`) — giá trị `G2H()` ổn
+   định suốt runtime nên tính lại mỗi lần gọi `draw()` cho kết quả giống hệt, không đổi hành vi.
+3. `psyz_gpu.c`: loại khỏi `NATIVE` list của `build.py`. Đọc `CMakeLists.txt` xác nhận file này chỉ được
+   build khi `MEMORIES_PSYZ_ROOT` (checkout PSY-Z ngoài, external GPU-emulation backend) được set — tắt
+   theo mặc định, và `build_game32.py` (driver i386/Windows/Linux) cũng không compile nó. Không có hàm
+   nào khác trong `src/pc` gọi vào `psyz_gpu.c` (dead code nếu thiếu dependency đó) — `build.py` quên
+   replicate gating này khi viết `NATIVE` list, không phải quyết định kiến trúc mới.
+4. `update_net.c` (file được phép sửa tay): `pipe2(fds, O_CLOEXEC)` không có trên macOS. Thay bằng
+   `pipe()` + `fcntl(fd, F_SETFD, FD_CLOEXEC)` trên cả 2 đầu dưới `#ifdef __APPLE__`, giữ nguyên nhánh
+   Linux.
+5. `gGraphics_pActiveFrameBuffer` (`gen_globals.py`): typedef collision ở `graphics_frame.c` — file này
+   vừa định nghĩa thật (tentative, không initializer) vừa `#include` chính header khai báo `extern` nó,
+   nên cả 2 nơi đều được macro-wrap trong cùng 1 TU → 2 struct ẩn danh trùng tên. Đây là symbol thứ 5 của
+   nhóm "vừa extern vừa định nghĩa thật" (T1.5 phiên 2 đã biết 4: `D_8009AF18`, `D_8009AF88`,
+   `D_8009B074`, `gFile_apszName`) nhưng bị `has_definition`'s `cursor.is_definition()` bỏ sót vì định
+   nghĩa thật của nó KHÔNG có initializer (tentative definition) — kiểm tra kỹ: KHÔNG thể sửa
+   `is_definition()` thành tổng quát "bất kỳ hit non-extern" vì điều đó sẽ loại nhầm toàn bộ 80 symbol
+   "pointer" đang hoạt động đúng (chúng cũng đều có định nghĩa tentative, không initializer — khác nhau
+   đúng 1 điểm: file định nghĩa của chúng không tự include header khai báo extern của chính nó). Loại
+   trừ theo TÊN cụ thể trong code, không tổng quát hoá, ghi rõ lý do trong comment.
+
+**Kết quả đo lại sau khi dọn**: 145/617 unit lỗi (giảm 8 từ 153/618 — 1 unit ít hơn vì loại `psyz_gpu.c`),
+222 global "mồ côi" (không đổi, xác nhận bằng diff set tên trước/sau). 0 regression.
+
+**Không sửa (để lại, không thuộc Gap A nhưng cũng không an toàn tự quyết)** — xem "Vấn đề mở" trong
+PROGRESS.md để biết chi tiết đầy đủ: 3 file `src/game` với lỗi `initializer element is not a
+compile-time constant` (cần cơ chế runtime-deferred-init chưa thiết kế cho nhóm 4-symbol đã biết);
+`monitor.c` (hoá ra là supervisor/crash-reporter thật, gọi từ `main.c`/`sdl.c`, không phải debug tool phụ
+— cần port Mach `task_info`/`sysctl` thay `prctl`/`ptrace`/`/proc` Linux); 5 file cần `png.h`/
+`fontconfig.h` (xác nhận qua `build_game32.py`: dependency THẬT của upstream, không optional — ADR-10
+chưa xét libpng/fontconfig cho macOS, T3.3 có kế hoạch cho fontconfig nhưng không có cho libpng).

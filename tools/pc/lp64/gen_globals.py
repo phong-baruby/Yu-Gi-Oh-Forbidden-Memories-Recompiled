@@ -179,6 +179,25 @@ def main():
         classified[hits[0]["shape"]].append(name)
 
     has_definition = {name for name, hits in found.items() if any(h["definition"] for h in hits)}
+    # gGraphics_pActiveFrameBuffer: found by T1.10's build driver (link sweep,
+    # 2026-10-08) as a 5th case of the same "extern in a header + a real
+    # definition elsewhere" problem as the 4 above, missed by the
+    # cursor.is_definition() check because its own defining line in
+    # graphics_frame.c is a tentative definition (`GraphicsFrameBuffer
+    # *gGraphics_pActiveFrameBuffer;`, no initializer) -- libclang's
+    # is_definition() is false for that shape, same as every tentative
+    # definition of every OTHER successfully-wrapped pointer global, so
+    # generalizing the check to "any non-extern hit" would wrongly exclude
+    # all of those too. What is actually different here: graphics_frame.c
+    # both defines the symbol AND #include-s graphics_frame.h, which also
+    # declares (and, via this same canonical/wrap mechanism, would also
+    # macro-wrap) it -- two independent typedefs of the same anonymous
+    # struct shape in one translation unit, a hard compile error
+    # (`typedef redefinition with different types`) regardless of
+    # initializers. Narrow, name-only exclusion (not a general rule) until
+    # someone measures how many other pointer globals have this same
+    # include-their-own-declaring-header shape.
+    has_definition.add("gGraphics_pActiveFrameBuffer")
     orphans = {name for name in wanted if name in found and name not in has_definition}
 
     # Canonical shape for every "pointer"/"pointer-array" global: one

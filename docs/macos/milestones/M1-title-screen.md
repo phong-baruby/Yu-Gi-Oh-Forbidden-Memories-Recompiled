@@ -59,6 +59,25 @@
 ### T1.10 — Build driver và lần chạy đầu
 - **Làm:** `tools/pc/macos/build.py`: chạy codemod → compile từ `tmp/lp64/src` với `-DMEMORIES_PC -DMEMORIES_LP64` → link Mach-O arm64 kèm deps, rồi `run`. Upstream có cơ chế stub tự log tên (`MEMORIES_STUB_TRACE`), giữ nguyên cơ chế này.
 - **Acceptance:** title screen, main menu, NEW GAME → name entry. Ghi video hoặc ảnh vào `docs/macos/reports/` (không commit ảnh có nội dung game, chỉ ghi mô tả).
+- **Trạng thái (2026-10-08):** build.py viết xong, chưa link được — dừng lại sau khi dọn các lỗi nhỏ
+  tách biệt (xem `docs/macos/reports/m1-build-driver.md`, PROGRESS.md "Vấn đề mở"). Việc lớn còn lại
+  (Gap A, ~123/145 file lỗi compile) tách sang T1.11 vì không milestone nào sau (M2-M6) giải quyết được.
+
+### T1.11 — Gap A: con trỏ host thật ép xuống s32/u32 qua biến cục bộ
+- **Bối cảnh:** biết từ T1.4e (2026-10-02), xác nhận là nguyên nhân áp đảo (~85% lỗi compile còn lại của
+  T1.10) ở phiên 2026-10-08 — xem `docs/macos/reports/m1-build-driver.md`. Khác offsetof-qua-NULL (ADR-05
+  mục 9, đã sửa): đây là con trỏ host THẬT bị ép xuống kiểu 32-bit qua biến cục bộ/tham số rồi ép ngược
+  lại con trỏ (ví dụ `u8 *indices = D_800EAE88; ... (s32)indices + i`), cắt cụt nửa trên của con trỏ
+  8-byte — không an toàn để chỉ bọc `(uintptr_t)`. `transform_c_expressions` (codemod.py) hiện chỉ quét
+  field struct (`MEMBER_REF_EXPR`)/global (`DeclRefExpr`), chưa quét biến cục bộ/tham số hàm mang con trỏ.
+- **Làm:** đo quy mô + hình dạng thật trước khi code (bao nhiêu file, bao nhiêu kiểu idiom khác nhau —
+  biến cục bộ đơn giản vs tham số hàm lan qua chữ ký vs field tạm trong vòng lặp...). Đề xuất ADR mới
+  (hoặc mở rộng ADR-05) cho cơ chế: khả năng cao nhất là đổi kiểu biến cục bộ/tham số liên quan sang kiểu
+  đủ rộng (`intptr_t`/`gaddr` tuỳ ngữ cảnh) qua codemod, không hand-edit `src/game`/`src/psyq`. Việc AST
+  mới, quy mô ước tính tương đương phần `MemberRefExpr` đã xây cho field GPTR (T1.3/T1.4).
+- **Acceptance:** số file compile-lỗi do Gap A giảm về 0 (hoặc có danh sách loại trừ tường minh + lý do
+  cho phần còn lại), không regression ở 145 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
+  thật.
 
 ## Gate G1
 Title screen chạy được. Cập nhật ước lượng M2–M6 trong PROGRESS.

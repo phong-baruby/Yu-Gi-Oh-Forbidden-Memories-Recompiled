@@ -106,8 +106,19 @@ static void exact_from_gte(Exact *exact, unsigned slot)
 
 static u32 *draw(u32 *scratch, const Driver *kind)
 {
+    /* Under MEMORIES_LP64 these 8 names are G2H(fixed_addr) macros (see
+     * above), not link-time constants, so a `static` initializer here is
+     * not a compile-time constant -- drop `static` so the 4 pointers are
+     * recomputed (same values every call, G2H's base never changes once
+     * guest RAM is mapped) instead of initialized once. i386/Windows/Linux
+     * keep `static` unchanged: there these are real link-time addresses. */
+#ifdef MEMORIES_LP64
+    u32 *const templates[2][2] = {{&D_8009AFAC, &D_8009AFB4}, {&D_8009AFB0, &D_8009AFB8}};
+    u32 *const second_templates[2][2] = {{&D_8009AFBC, &D_8009AFC4}, {&D_8009AFC0, &D_8009AFC8}};
+#else
     static u32 *const templates[2][2] = {{&D_8009AFAC, &D_8009AFB4}, {&D_8009AFB0, &D_8009AFB8}};
     static u32 *const second_templates[2][2] = {{&D_8009AFBC, &D_8009AFC4}, {&D_8009AFC0, &D_8009AFC8}};
+#endif
     const u32 *primitive = (const u32 *)(uintptr_t)scratch[0];
     const u32 *table = (const u32 *)(uintptr_t)scratch[1];
     const unsigned shift = scratch[2] & 31;
