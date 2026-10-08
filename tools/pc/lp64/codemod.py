@@ -1137,6 +1137,186 @@ def fix_pointer_narrowing_casts(data, tu, filename):
     return out
 
 
+LOCAL_VARIABLE_WIDENING_SAFE_FILES = frozenset({
+    "duel_card_type_icon.c", "duel_reward_setup.c", "model_control.c",
+    "text_init_decimal_digit_glyph_map.c",
+})
+
+TAINT_BINOPS = ("+", "-", "<<")
+
+
+def _is_narrow_int_type(t):
+    c = t.get_canonical()
+    return c.kind in (cindex.TypeKind.INT, cindex.TypeKind.UINT,
+                      cindex.TypeKind.LONG, cindex.TypeKind.ULONG) and c.get_size() <= 4
+
+
+def fix_pointer_narrowing_locals(data, tu, filename):
+    """T1.11 A1-STORED (ADR-05 mục 10): a local VARIABLE declared with a
+    narrow integer type that holds a real host pointer across more than one
+    statement -- unlike fix_pointer_narrowing_casts's A1-INLINE shape (a
+    narrowing cast consumed immediately, within the same expression, never
+    stored), here the narrowed value survives in the variable itself, so
+    widening only the cast (that function's fix) is not enough: the result
+    still gets truncated again on the way INTO the narrow-declared variable.
+    The fix widens the VARIABLE's own declared type to uintptr_t instead (and
+    any narrowing cast feeding it, by the same text-level edit
+    fix_pointer_narrowing_casts already uses) -- large enough to round-trip a
+    full pointer, so every statement already written against it (`+=`, `<<=`,
+    a later read-back cast) keeps computing the same value, just without
+    losing the top bits along the way.
+
+    This is a small, explicit taint-propagation fixed point over this ONE
+    file's local variables (PARM_DECL deliberately excluded -- a parameter's
+    type change reaches every call site too, ADR-05 mục 10's own harder
+    "STORED_ARG" case, left for a later session, same spirit as T1.6's
+    GPTR_FN local/parameter exclusion): seed with every local VAR_DECL/
+    assignment whose RHS is a real pointer (directly, or through a cast of
+    any width -- duel_reward_setup.c's `current = (uintptr_t)(...)` has no
+    narrowing cast to find at all, the truncation is only the implicit
+    wide-to-narrow store into `current`'s own declared type); propagate
+    forward through `+`/`-`/`<<` arithmetic and plain copies between two
+    already-known narrow locals, the same handful of operators A1-INLINE's
+    own phiên-1 reading found safe to widen (not `*`/`&`/`|`: those are the
+    self-multiply and bank-mask shapes that same reading found to change
+    the computed VALUE, not just silence the warning, if blindly widened).
+
+    Only ever called for LOCAL_VARIABLE_WIDENING_SAFE_FILES -- each file in
+    it was read in full first (docs/macos/reports/m1-t1.11-discovery.md's
+    A1-STORED section), same as POINTER_NARROWING_SAFE_FILES's own rule:
+    most of the files this pass's underlying census first flagged turned
+    out NOT to be this shape at all once read (ADR-04's GPTR-via-local
+    write, T1.4j's 2-tier gaddr decode, or src/unmatched.h's pre-existing
+    "one symbol, different C type per consumer" quirk -- a global, not a
+    local, left for its own future session) -- expand this allow-list only
+    by reading the next file's candidate variable the same way, not by
+    trusting this pass's own taint graph unsupervised."""
+    parent_map = {}
+    build_parent_map(tu.cursor, parent_map)
+
+    narrow_locals = {}
+    for cursor in tu.cursor.walk_preorder():
+        if cursor.kind != cindex.CursorKind.VAR_DECL:
+            continue
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        if cursor.linkage != cindex.LinkageKind.NO_LINKAGE:
+            continue  # file-scope extern (e.g. src/unmatched.h's D_8009B118) -- not a local
+        if not _is_narrow_int_type(cursor.type):
+            continue
+        narrow_locals[cursor.hash] = cursor
+    if not narrow_locals:
+        return data, 0
+
+    widen = set()
+    narrow_cast_sites = []
+
+    def is_tainted_expr(node):
+        """True if `node` (unwrap_transparent'd) is itself a real pointer, or
+        a reference to an already-widened local -- the two base cases that
+        make whatever consumes `node` tainted too."""
+        node = unwrap_transparent(node)
+        if is_pointer_like(node.type) and not is_gaddr_type(node.type):
+            return True
+        return node.kind == cindex.CursorKind.DECL_REF_EXPR and node.referenced is not None \
+            and node.referenced.hash in widen
+
+    def check_rhs(rhs):
+        """True if `rhs` carries a tainted real-pointer value into whatever
+        variable it is being assigned to. Records a CSTYLE_CAST_EXPR whose
+        own target is narrow in `narrow_cast_sites` (needs the same text
+        edit as fix_pointer_narrowing_casts); a wide-target cast (e.g.
+        (uintptr_t)ptr) needs no site edit of its own, only the variable's
+        declared type."""
+        rhs = unwrap_transparent(rhs)
+        if rhs.kind == cindex.CursorKind.CSTYLE_CAST_EXPR:
+            operand = unwrap_transparent(list(rhs.get_children())[-1])
+            if not is_tainted_expr(operand):
+                return False
+            if _is_narrow_int_type(rhs.type):
+                narrow_cast_sites.append(rhs)
+            return True
+        if rhs.kind == cindex.CursorKind.BINARY_OPERATOR:
+            children = list(rhs.get_children())
+            if len(children) != 2 or binop_operator(rhs, data) not in TAINT_BINOPS:
+                return False
+            return check_rhs(children[0]) or check_rhs(children[1])
+        return is_tainted_expr(rhs)
+
+    changed = True
+    while changed:
+        changed = False
+        for cursor in tu.cursor.walk_preorder():
+            if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+                continue
+            lhs_hash, rhs_node = None, None
+            if cursor.kind == cindex.CursorKind.VAR_DECL and cursor.hash in narrow_locals:
+                children = list(cursor.get_children())
+                if children:
+                    lhs_hash, rhs_node = cursor.hash, children[-1]
+            elif cursor.kind in (cindex.CursorKind.BINARY_OPERATOR,
+                                  cindex.CursorKind.COMPOUND_ASSIGNMENT_OPERATOR):
+                children = list(cursor.get_children())
+                if len(children) == 2 and binop_operator(cursor, data) in ("=", "+=", "-=", "<<="):
+                    lhs = unwrap_transparent(children[0])
+                    if lhs.kind == cindex.CursorKind.DECL_REF_EXPR and lhs.referenced is not None \
+                            and lhs.referenced.hash in narrow_locals:
+                        lhs_hash, rhs_node = lhs.referenced.hash, children[1]
+            if lhs_hash is None or lhs_hash in widen:
+                continue
+            if check_rhs(rhs_node):
+                widen.add(lhs_hash)
+                changed = True
+
+    if not widen:
+        return data, 0
+
+    # Sanity check: every widened variable must actually be read back as a
+    # pointer somewhere in this file, or this allow-list entry found nothing
+    # real to fix (ADR-05's "abort, don't guess" -- see docstring).
+    read_back = set()
+    for cursor in tu.cursor.walk_preorder():
+        if cursor.location.file is None or os.path.basename(str(cursor.location.file)) != filename:
+            continue
+        if cursor.kind != cindex.CursorKind.CSTYLE_CAST_EXPR or not is_pointer_like(cursor.type.get_canonical()):
+            continue
+        children = list(cursor.get_children())
+        if not children:
+            continue
+        operand = unwrap_transparent(children[-1])
+        if operand.kind == cindex.CursorKind.DECL_REF_EXPR and operand.referenced is not None:
+            read_back.add(operand.referenced.hash)
+    if not (widen & read_back):
+        sys.exit(f"error: {filename}: fix_pointer_narrowing_locals widened {len(widen)} "
+                 f"local variable(s) but none is ever read back through a pointer cast -- "
+                 f"this LOCAL_VARIABLE_WIDENING_SAFE_FILES entry is probably wrong")
+
+    edits = []
+    for h in widen:
+        decl = narrow_locals[h]
+        start, ident_start = decl.extent.start.offset, decl.location.offset
+        spelling = decl.type.spelling.encode("utf-8")
+        pos = data.rfind(spelling, start, ident_start)
+        if pos < 0:
+            sys.exit(f"error: {filename}:{decl.location.line}: could not find {decl.type.spelling!r} "
+                     f"in {decl.spelling!r}'s own declaration text -- add a "
+                     f"config/lp64/overrides.toml entry")
+        edits.append((pos, pos + len(spelling), b"uintptr_t"))
+    for cursor in narrow_cast_sites:
+        start = cursor.extent.start.offset
+        m = NARROW_CAST_TEXT_RE.match(data[start:start + 40])
+        if m is None:
+            sys.exit(f"error: {filename}:{cursor.location.line}: pointer-narrowing cast does not "
+                     f"match the expected '(TYPE)' text shape -- add a config/lp64/overrides.toml "
+                     f"entry or extend NARROW_CAST_TEXT_RE")
+        edits.append((start + m.start(1), start + m.end(1), b"uintptr_t"))
+
+    out = data
+    for s, e, repl in sorted(edits, key=lambda x: x[0], reverse=True):
+        out = out[:s] + repl + out[e:]
+    return out, len(widen)
+
+
 def load_function_addresses(path):
     """name -> retail address (int), from config/slus_01411/functions.csv --
     T1.6/ADR-04: writing a literal decompiled function name into a GPTR_FN
@@ -1813,6 +1993,19 @@ def transform_code_file(path, out_path, relpath, overrides, out_dir, in_dir, exp
         sys.exit(f"{out_path}: could not parse for expression codemod (even with the psyq prelude)")
     out_data, count = transform_c_expressions(data, tu, os.path.basename(path), function_addresses)
     out_data = fix_global_pointer_chains(out_data, globals_map)
+    # fix_pointer_narrowing_locals before fix_pointer_narrowing_casts (not the
+    # reverse): a file in both allow-lists (e.g. duel_reward_setup.c) needs
+    # its STORED variable's own declared type widened first -- once that
+    # re-parse shows the cast's target as uintptr_t (8 bytes), it no longer
+    # matches fix_pointer_narrowing_casts's own narrow-target scan, so the two
+    # passes never fight over the same cast site.
+    if os.path.basename(path) in LOCAL_VARIABLE_WIDENING_SAFE_FILES:
+        with open(out_path, "wb") as handle:
+            handle.write(out_data)
+        locals_tu = parse_code(out_path, out_dir, in_dir)
+        if locals_tu is None:
+            sys.exit(f"{out_path}: could not re-parse for fix_pointer_narrowing_locals")
+        out_data, _ = fix_pointer_narrowing_locals(out_data, locals_tu, os.path.basename(path))
     if os.path.basename(path) in POINTER_NARROWING_SAFE_FILES:
         with open(out_path, "wb") as handle:
             handle.write(out_data)

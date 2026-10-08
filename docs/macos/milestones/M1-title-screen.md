@@ -109,9 +109,15 @@
   trước** (A1 không bị ràng buộc layout). A5 đã làm xong (`fix_literal_address_casts`, 0 regression,
   idempotent — xem PROGRESS.md decision log). **A1-INLINE đã làm xong** (`fix_pointer_narrowing_casts`,
   allow-list 20/22 file — 2 file loại ra vì shape trùng cú pháp nhưng khác ý nghĩa, xem ADR-05 mục 10 —
-  137/617 unit lỗi, giảm 8, 0 regression). **Thứ tự còn lại:** A1-STORED (28 file) → A1-STORED_ARG
-  (18 file) → UNCLEAR+macro-khác-file+2 file loại khỏi A1-INLINE (đọc tay) → quay lại A2 sau khi đọc kỹ
-  cả 13 field.
+  137/617 unit lỗi, giảm 8, 0 regression). **A1-STORED đã làm xong** (`fix_pointer_narrowing_locals`,
+  allow-list 4 file — census lại ra 23 site/14 file "STORED" thật sau khi tách field ra khỏi biến cục bộ,
+  nhưng đọc hết 14 file lộ ra 10/14 không phải A1 (global thoát-ly-kiểu MỚI phát hiện trong `src/
+  unmatched.h`, GPTR_FN-qua-biến-cục-bộ đã biết từ ADR-04/T1.6, 2-tầng gaddr decode đã biết từ T1.4j,
+  bitmask/tự nhân đã biết từ A1-INLINE) — 135/617 unit lỗi, giảm 2, 0 regression, idempotent, layout
+  0 khác biệt. **Thứ tự còn lại:** A1-STORED_ARG (5 tham số: `func_80052D2C.c` arg1/arg2,
+  `duel_shuffle_deck.c` src, `display_object_helpers.c` ot, `func_800320BC.c` arg0) → quyết định về
+  global thoát-ly-kiểu (`D_8009B118` họ hàng, 8 file) → UNCLEAR+macro-khác-file+2 file loại khỏi
+  A1-INLINE (đọc tay) → quay lại A2 sau khi đọc kỹ cả 13 field.
 - **Acceptance:** số file compile-lỗi do A1/A2/A5 giảm về 0 (hoặc có danh sách loại trừ tường minh + lý
   do cho phần còn lại), không regression ở 472 file hiện đang compile sạch. Sau đó quay lại T1.10 để link
   thật (còn cần Gap B hoàn thiện + ADR-04 mở rộng trước khi 0 data blocker).
