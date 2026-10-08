@@ -2010,3 +2010,68 @@ pattern = "parameter-narrows-real-pointer"
 reason = "The one call site into BuildDeck_AddCard -- widen the cast that used to satisfy its old s32 parameter, now that it is uintptr_t (see that function's own override)."
 old = "            BuildDeck_AddCard((s32)state, r);"
 new = "            BuildDeck_AddCard((uintptr_t)state, r);"
+
+# T1.11 A2 investigation found a codemod GAP, not an A2 field shape: a global
+# with more than one declaration ARM selected by a per-consumer guard define
+# (`#ifdef NAME_IN_DATA` / `#else`, same family as src/unmatched.h's
+# D_8009B118 -- grep shows 56 such #ifdef sites project-wide) only ever gets
+# ONE arm wrapped by collect_global_edits/transform_file (codemod.py): that
+# function parses the header with a FIXED set of macros defined, so only the
+# AST of whichever branch the preprocessor keeps for THAT parse exists to be
+# edited -- the other branch's text sits there completely untouched, still
+# the pre-LP64 raw `extern T *NAME ...;`, for every consumer file that
+# defines the guard and takes that other branch. A consumer reaching that
+# raw branch gets a real, un-gaddr'd host pointer under MEMORIES_LP64 (no
+# G2H ever runs for it) -- confirmed for D_800101D8 (file_transfer.h, 2
+# consumers: campaign_map_load_package_stage.c, free_duel_load_package_
+# stage.c) and D_8009B458 (sound.h, 3-arm, ~10 consumers define one of its
+# two alternate guards). Both ARE in globals_census.json's canonical dict as
+# plain "pointer" (not excluded, not conflicting) -- this is purely a
+# wrapping-mechanism gap, not a reason to exclude them. Fixed here with a
+# literal override per missed arm (same G2H/GPTR wrapper shape
+# global_wrapper_text would generate, just hand-written since the automatic
+# pass cannot see this branch at all) rather than teaching codemod.py to
+# re-parse a header under every macro combination -- only 2 symbols
+# confirmed to actually matter right now (see m1-t1.11-discovery.md); the
+# remaining ~54 guard-sites are either non-pointer (no truncation risk) or
+# already excluded for an unrelated, already-known reason (GCALL/ADR-04
+# function-pointer tables, "vuong extern dinh nghia that", or genuinely
+# conflicting shape) -- left for whoever next needs one of them, read and
+# confirmed the same way these two were, not applied blanket.
+
+[[override]]
+file = "game/file_transfer.h"
+pattern = "global-guarded-arm-missed-by-collect_global_edits"
+reason = """
+D_800101D8_IN_DATA's own arm (taken by campaign_map_load_package_stage.c,
+free_duel_load_package_stage.c) was never wrapped -- only the sibling #else
+arm was, because transform_file's AST-driven collect_global_edits only ever
+sees whichever single branch its own fixed-macro parse resolves to. Confirmed
+by the compile error this causes: campaign_map_load_package_stage.c:26-27
+`object->value_0C = (u32)D_800101D8;` -- cast to smaller integer type from
+'u8 *' (this arm's un-gaddr'd raw pointer, under MEMORIES_LP64 still 8 bytes).
+"""
+old = """#ifdef D_800101D8_IN_DATA
+extern u8 *D_800101D8 __attribute__((MEMORIES_SECTION(".data")));
+#else"""
+new = """#ifdef D_800101D8_IN_DATA
+#ifdef MEMORIES_LP64
+typedef struct { GPTR(unsigned char) value; } D_800101D8_in_data_global_t;
+#define D_800101D8 (*(D_800101D8_in_data_global_t *)G2H(0x800101D8u)).value
+#else
+extern u8 *D_800101D8 __attribute__((MEMORIES_SECTION(".data")));
+#endif
+#else"""
+
+## D_8009B458 (game/sound.h) has the SAME missed-arm shape as D_800101D8
+## just above (THREE arms: D_8009B458_IN_DATA / SDSECONDARYSTATE_AS_BYTES /
+## default, only the default ever wrapped) -- NOT fixed here. A first attempt
+## wrapping it the same way surfaced a cascade of "degenerate source extent"
+## aborts in its ~10 consumers (confirmed: sound_voice_setup.c:74 passes
+## D_8009B458 as a function-like macro's argument, SD_SECONDARY_OFFSET_VIEW --
+## the same macro-argument MEMBER_REF_EXPR hazard ai_turn_action.c's own
+## override already documents, now newly reachable because D_8009B458 only
+## becomes a real MEMBER_REF_EXPR once wrapped). Each consumer needs its own
+## site read and its own override, same as ai_turn_action.c's -- reverted
+## here rather than guessing at 10 files' worth of macro call sites in one
+## pass; left for whoever picks this up next, see m1-t1.11-discovery.md.
